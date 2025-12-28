@@ -2,7 +2,6 @@ import time
 import uuid
 import sys
 
-sys.path.insert(1, './')
 import ipi_ecs.control.subsystem as subsystem
 import ipi_ecs.control.types as types
 import ipi_ecs.control.client as client
@@ -11,7 +10,7 @@ p = None
 def setup_subsystem(handle: client.SubsystemHandle):
     global p
 
-    print("Registered!", handle.get_info().get_name())
+    print("Registered:", handle.get_info().get_name())
           
     p = handle.add_kv(b"test property", cache=True)
 

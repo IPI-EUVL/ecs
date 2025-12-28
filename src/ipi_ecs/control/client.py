@@ -120,7 +120,6 @@ class _LocalProperty:
             raise ValueError("Property type is incompatible with provided value")
         
         self.__value = encoded
-        print(value)
 
         if self.__send:
             self.__subsystem.get_client()._set_kv_handle(self.__key, self.__value, self.__subsystem.get_uuid(), self.__subsystem.get_uuid())
@@ -501,8 +500,6 @@ class ControlServerClient:
 
             self.__subsystem_handles[subsystem_handle.get_info().get_uuid()] = subsystem_handle
 
-            print(self.__subsystem_handles[subsystem_handle.get_info().get_uuid()])
-
             self.__registered_event.call()
             self.__registered_awaiter.call(subsystem_handle.get_handle())
 
@@ -542,8 +539,6 @@ class ControlServerClient:
         
         ret_handle = self.__KVOpHandle()
         ret_handle.set_value(val)
-
-        print(val)
 
         self.__transactions.send_transaction(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val])).then(self.__on_set_kv_returned_handle, [ret_handle])
         return ret_handle.get_handle()
@@ -629,7 +624,6 @@ class ControlServerClient:
             self.__active_subscribers[kv.get_remote()] = []
 
         self.__active_subscribers[kv.get_remote()].append(kv)
-        print(kv.get_remote())
         self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segmented_bytearray.encode([kv.get_remote().bytes, kv.get_key()]))
 
 

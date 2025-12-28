@@ -2,7 +2,6 @@ import time
 import uuid
 import sys
 
-sys.path.insert(1, './')
 import ipi_ecs.control.client as client
 import ipi_ecs.control.subsystem as subsystem
 import ipi_ecs.control.types as types
@@ -18,7 +17,7 @@ remote_kv = None
 def setup_subsystem(handle: client.SubsystemHandle):
     global remote_kv
 
-    print("Registered!", handle.get_info().get_name())
+    print("Registered:", handle.get_info().get_name())
     remote_kv = handle.add_remote_kv(b"test property", uuid.uuid3(uuid.NAMESPACE_OID, "1"), True)
     remote_kv.set_type(types.IntegerTypeSpecifier())
 
