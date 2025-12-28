@@ -1,6 +1,6 @@
 import time
 
-import ecs.control.server as server
+import ipi_ecs.control.server as server
 
 server = server.ControlServer()
 server.start()

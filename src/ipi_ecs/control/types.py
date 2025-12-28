@@ -1,5 +1,5 @@
-import ecs.lib.segmented_bytearray as segmented_bytearray
-from ecs.control.magics import *
+import ipi_ecs.core.segmented_bytearray as segmented_bytearray
+from ipi_ecs.control.magics import *
 
 class PropertyTypeSpecifier:
     def parse(self, data : bytes):

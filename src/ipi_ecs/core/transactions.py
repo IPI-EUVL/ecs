@@ -1,7 +1,7 @@
 import queue
 import uuid
 
-import ecs.lib.mt_events as mt_events
+import ipi_ecs.core.mt_events as mt_events
 
 MAGIC_NEW_TRANS = 0x00
 MAGIC_ACK_TRANS = 0x01

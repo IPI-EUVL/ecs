@@ -3,9 +3,9 @@ import uuid
 import sys
 
 sys.path.insert(1, './')
-import ecs.control.subsystem as subsystem
-import ecs.control.types as types
-import ecs.control.client as client
+import ipi_ecs.control.subsystem as subsystem
+import ipi_ecs.control.types as types
+import ipi_ecs.control.client as client
 
 p = None
 def setup_subsystem(handle: client.SubsystemHandle):

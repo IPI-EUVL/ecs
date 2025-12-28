@@ -4,8 +4,8 @@ import time
 import queue
 import select
 
-import ecs.lib.daemon as daemon
-import ecs.lib.mt_events as mt_events
+import ipi_ecs.core.daemon as daemon
+import ipi_ecs.core.mt_events as mt_events
 
 SOCKET_BUFSIZE = 1024
 DELIM = bytes([0x00])

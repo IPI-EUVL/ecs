@@ -1,9 +1,9 @@
 import queue
 import time
 
-import ecs.lib.transactions as transactions
-import ecs.lib.mt_events as mt_events
-import ecs.lib.daemon as daemon
+import ipi_ecs.core.transactions as transactions
+import ipi_ecs.core.mt_events as mt_events
+import ipi_ecs.core.daemon as daemon
 
 a_out = queue.Queue()
 a = transactions.TransactionManager(a_out)

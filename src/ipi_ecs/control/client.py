@@ -2,15 +2,15 @@ import queue
 import time
 import uuid
 
-import ecs.lib.tcp as tcp
-import ecs.lib.daemon as daemon
-import ecs.lib.mt_events as mt_events
-import ecs.lib.transactions as transactions
-import ecs.lib.segmented_bytearray as segmented_bytearray
+import ipi_ecs.core.tcp as tcp
+import ipi_ecs.core.daemon as daemon
+import ipi_ecs.core.mt_events as mt_events
+import ipi_ecs.core.transactions as transactions
+import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 
-from ecs.control.subsystem import SubsystemInfo
-from ecs.control.types import PropertyTypeSpecifier, ByteTypeSpecifier
-from ecs.control.magics import *
+from ipi_ecs.control.subsystem import SubsystemInfo
+from ipi_ecs.control.types import PropertyTypeSpecifier, ByteTypeSpecifier
+from ipi_ecs.control.magics import *
 
 class SubsystemHandle:
     def __init__(self, subsystem: "ControlServerClient._RegisteredSubsystem"):
