@@ -1,5 +1,5 @@
 __pycache__/*
 *__pycache__*
-.code_workspace
+*.code-workspace
 venv/*
 *.egg-info*
