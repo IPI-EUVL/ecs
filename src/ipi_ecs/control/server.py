@@ -1,4 +1,5 @@
 import sys
+import os
 import queue
 import time
 import uuid
@@ -10,7 +11,8 @@ import ipi_ecs.core.transactions as transactions
 import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 from ipi_ecs.control.subsystem import SubsystemInfo
 from ipi_ecs.control.magics import *
-        
+
+ENV_DDS_PORT = "IPI_ECS_DDS_PORT"
 
 class ControlServer:
     __E_ON_CLIENT_CONNECT = 0
@@ -239,9 +241,16 @@ class ControlServer:
             if self.__kv_subscribers[key].count(client) == 0:
                 self.__kv_subscribers[key].append(client)
 
-    def __init__(self):
+    def __init__(self, host = "0.0.0.0", port = None):
         self.__client_queue = queue.Queue()
-        self.__server = tcp.TCPServer(("0.0.0.0", SERVER_PORT), self.__client_queue)
+        
+        if port is None:
+            port = os.environ.get("ENV_DDS_PORT")
+
+        if port is None:
+            port = SERVER_PORT
+        
+        self.__server = tcp.TCPServer((host, port), self.__client_queue)
 
         self.__clients = []
 
@@ -350,3 +359,7 @@ class ControlServer:
             return
         
         s._subscribe(self.__clients_uuid[r_uuid], key)
+
+    def close(self):
+        self.__daemon.stop()
+        self.__server.close()

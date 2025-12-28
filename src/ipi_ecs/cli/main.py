@@ -10,6 +10,7 @@ from typing import Any
 from ipi_ecs.logging.journal import resolve_log_dir
 from ipi_ecs.logging.logger_server import run_logger_server
 from ipi_ecs.logging.reader import JournalReader
+from ipi_ecs.control.server import ControlServer
 
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
 
@@ -149,6 +150,18 @@ def cmd_log_browse(args: argparse.Namespace) -> int:
     app.run()
     return 0
 
+def cmd_server(args: argparse.Namespace) -> int:
+    m_server = ControlServer(args.host, args.port)
+    m_server.start()
+
+    time.sleep(0.1)
+    while m_server.ok():
+        time.sleep(1)
+
+    m_server.close()
+
+    return 0
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ipi-ecs")
@@ -157,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     # logger
     pl = sub.add_parser("logger", help="Run the log ingestion server.")
     pl.add_argument("--host", default="0.0.0.0")
-    pl.add_argument("--port", type=int, default=5556)
+    pl.add_argument("--port", type=int, default=None)
     pl.add_argument("--log-dir", type=Path, default=None)
     pl.add_argument("--rotate-max-mb", type=int, default=256)
     pl.set_defaults(fn=cmd_logger)
@@ -187,6 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--poll", type=float, default=0.25)
     pb.add_argument("--follow", action="store_true", help="Auto-jump to the end as logs arrive.")
     pb.set_defaults(fn=cmd_log_browse)
+
+    # server
+    ps = sub.add_parser("server", help="Run the ECS DDS control server.")
+    ps.add_argument("--host", default="0.0.0.0")
+    ps.add_argument("--port", type=int, default=None)
+    ps.set_defaults(fn=cmd_server)
 
     return p
 
