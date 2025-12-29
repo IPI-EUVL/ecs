@@ -17,22 +17,24 @@ class LogClient:
     @property
     def origin_uuid(self) -> str:
         return self._origin_uuid
-
-    def log(
-        self,
-        msg: str,
-        *,
-        level: str = "INFO",  # free-form string (your preference)
-        origin_ts_ns: int | None = None,
-        subsystem: str | None = None,
-        event: str | None = None,
-        **data: Any,
-    ) -> None:
+    
+    def log(self, msg: str, *, level: str = "INFO", l_type: str = "SW", event: str | None = None, origin_ts_ns: int | None = None, **data: Any,) -> None:
         """
         Send one structured record. All extra fields go into record["data"].
+
+        Args:
+            msg (str): Message to log
+            level (str): Log level (can be arbitrary)
+            l_type (str): Log type (can be arbitrary) such as: SOFTW, EXP. Used to distinguish debugging-related messages from experiment-related messages
+            event (str): Event type (can be arbitrary)
+            origin_ts_ns (int): Origin timestamp (if desired)
+            data (Any): Extra data to add to log. Intended usage is for subsystems to store event-related data to enable replay of experiment events.
         """
+
         self._seq += 1
 
+        # The following is Schema v1
+        # MODIFYING THESE KEYS WILL GIVE ME A HEADACHE. DO NOT TOUCH
         record: dict[str, Any] = {
             "v": 1,  # record schema version
             "origin": {
@@ -42,8 +44,8 @@ class LogClient:
             "seq": self._seq,
             "level": level,
             "msg": msg,
+            "l_type": l_type,
             "data": {
-                **({"subsystem": subsystem} if subsystem else {}),
                 **({"event": event} if event else {}),
                 **data,
             },

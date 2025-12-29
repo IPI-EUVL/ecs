@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from platformdirs import user_log_dir
+from ipi_ecs.logging.index import SQLiteIndex
 
 
 def resolve_log_dir(cli_log_dir: Path | None, env_var: str) -> Path:
@@ -41,6 +42,8 @@ class JournalWriter:
         index_every_lines: int = 2000,
         session_id: str | None = None,
         service_name: str = "logger",
+        commit_interval_s: float = 5.0,
+        segment_update_interval_s: float = 5.0,
     ):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
@@ -48,6 +51,11 @@ class JournalWriter:
         self.rotate_max_bytes = rotate_max_bytes
         self.rotate_max_seconds = rotate_max_seconds
         self.index_every_lines = index_every_lines
+
+        self.commit_interval_s = commit_interval_s
+        self.segment_update_interval_s = segment_update_interval_s
+        self._last_commit_mon = time.monotonic()
+        self._last_seg_update_mon = time.monotonic()
 
         self.session_id = session_id or str(uuid.uuid4())
         self.service_name = service_name
@@ -61,18 +69,29 @@ class JournalWriter:
         self._active_started_ns = 0
         self._active_seg: SegmentInfo | None = None
 
+        self.index = SQLiteIndex(root / "index.sqlite3")
+        self._global_line = self.index.get_next_line()
+
         self._load_manifest()
         self._open_new_segment()
 
     def close(self) -> None:
         self._finalize_active_segment()
         self._save_manifest()
+        try:
+            self.index.conn.commit()
+        except Exception:
+            pass
+        try:
+            self.index.close()
+        except Exception:
+            pass
 
     def _load_manifest(self) -> None:
         if not self._manifest_path.exists():
             return
         obj = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        self._global_line = int(obj.get("next_line", 0))
+        # NOTE: next_line is sourced from SQLite (index.sqlite3); do not override it from manifest.
         self._segments = [SegmentInfo(**seg) for seg in obj.get("segments", [])]
 
     def _save_manifest(self) -> None:
@@ -95,6 +114,9 @@ class JournalWriter:
         if self._active_seg is not None:
             self._active_seg.end_line = self._global_line
             self._active_seg.end_ts_ns = time.time_ns()
+
+            self.index.finalize_segment(self._active_name, self._global_line, time.time_ns())
+            self.index.conn.commit()
 
         for fp in (self._active_fp, self._active_idx_fp):
             if fp is None:
@@ -139,6 +161,10 @@ class JournalWriter:
         self._segments.append(seg)
         self._active_seg = seg
 
+        self._active_name = path.name
+        self.index.create_segment(self._active_name, self._global_line, start_ns)
+        self.index.conn.commit()
+
         self._save_manifest()
 
     def _should_rotate(self) -> bool:
@@ -156,27 +182,57 @@ class JournalWriter:
             self._open_new_segment()
 
         rec = dict(record)
-        rec.setdefault("ingest_ts_ns", time.time_ns())
+        ingest_ts_ns = int(rec.get("ingest_ts_ns") or time.time_ns())
+        rec["ingest_ts_ns"] = ingest_ts_ns
+
+        origin = rec.get("origin") or {}
+        origin_uuid = origin.get("uuid") if isinstance(origin.get("uuid"), str) else "UNKNOWN"
+        origin_ts_ns = int(origin.get("ts_ns") or 0)
+
+        l_type = rec.get("l_type") if isinstance(rec.get("l_type"), str) else "UNKNOWN"
+        level = rec.get("level") if isinstance(rec.get("level"), str) else "UNKNOWN"
 
         line_no = self._global_line
 
-        # index checkpoint: store byte offset at the START of the line
-        if (
-            self._active_idx_fp is not None
-            and self.index_every_lines > 0
-            and self._active_seg is not None
-        ):
-            if (line_no - self._active_seg.start_line) % self.index_every_lines == 0:
-                off = self._active_fp.tell()
-                self._active_idx_fp.write(f"{line_no}\t{off}\n".encode("ascii"))
+        # byte offset BEFORE writing the line
+        byte_off = self._active_fp.tell()
 
         b = json.dumps(rec, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
         self._active_fp.write(b)
 
-        self._global_line += 1
+        # index row
+        self.index.insert_record(
+            line=line_no,
+            origin_uuid=origin_uuid,
+            origin_ts_ns=origin_ts_ns,
+            ingest_ts_ns=ingest_ts_ns,
+            l_type=l_type,
+            level=level,
+            segment_path=self._active_name,
+            byte_off=byte_off,
+        )
 
-        # Persist manifest occasionally; rotation always persists immediately anyway.
-        if self._global_line % 2000 == 0:
-            self._save_manifest()
+        self._global_line += 1
+        self.index.set_next_line(self._global_line)
+
+        # ---- periodic commit + segment progress ----
+        now_mon = time.monotonic()
+
+        # update the segments table so metadata stays current
+        if (now_mon - self._last_seg_update_mon) >= self.segment_update_interval_s:
+            # This is safe to call repeatedly; it’s just an UPDATE.
+            self.index.finalize_segment(self._active_name, self._global_line, time.time_ns())
+            self._last_seg_update_mon = now_mon
+
+            # Optional: flush file so “tailing” sees bytes quickly
+            try:
+                self._active_fp.flush()
+            except Exception:
+                pass
+
+        # commit at least every commit_interval_s, and also every N lines for throughput
+        if (now_mon - self._last_commit_mon) >= self.commit_interval_s or (self._global_line % 200 == 0):
+            self.index.conn.commit()
+            self._last_commit_mon = now_mon
 
         return line_no
