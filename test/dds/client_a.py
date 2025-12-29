@@ -2,10 +2,10 @@ import time
 import uuid
 import sys
 
-import ipi_ecs.control.subsystem as subsystem
-import ipi_ecs.control.types as types
-import ipi_ecs.control.client as client
-import ipi_ecs.control.magics as magics
+import ipi_ecs.dds.subsystem as subsystem
+import ipi_ecs.dds.types as types
+import ipi_ecs.dds.client as client
+import ipi_ecs.dds.magics as magics
 
 p = None
 def handle_set(h, v):
@@ -31,7 +31,7 @@ def setup_subsystem(handle: client.SubsystemHandle):
     p.set_type(t)
     p.value = 0
 
-m_client = client.ControlServerClient(uuid.uuid4())
+m_client = client.DDSClient(uuid.uuid4())
 m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "1"), "my subsystem")).then(setup_subsystem)
 
 time.sleep(1)

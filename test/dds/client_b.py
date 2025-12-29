@@ -2,9 +2,9 @@ import time
 import uuid
 import sys
 
-import ipi_ecs.control.client as client
-import ipi_ecs.control.subsystem as subsystem
-import ipi_ecs.control.types as types
+import ipi_ecs.dds.client as client
+import ipi_ecs.dds.subsystem as subsystem
+import ipi_ecs.dds.types as types
 
 
 def print_kvs(state, reason, value = None):
@@ -21,7 +21,7 @@ def setup_subsystem(handle: client.SubsystemHandle):
     remote_kv = handle.add_remote_kv(b"test property handler", uuid.uuid3(uuid.NAMESPACE_OID, "1"), False)
     remote_kv.set_type(types.ByteTypeSpecifier())
 
-m_client = client.ControlServerClient(uuid.uuid4())
+m_client = client.DDSClient(uuid.uuid4())
 m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "2"), "my subsystem2")).then(setup_subsystem)
 time.sleep(1)
 #client.get_kv_await("test readonly property3", uuid.uuid3(uuid.NAMESPACE_OID, "1")).then(print_kvs)

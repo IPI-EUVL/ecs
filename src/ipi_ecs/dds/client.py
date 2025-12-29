@@ -8,12 +8,12 @@ import ipi_ecs.core.mt_events as mt_events
 import ipi_ecs.core.transactions as transactions
 import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 
-from ipi_ecs.control.subsystem import SubsystemInfo
-from ipi_ecs.control.types import PropertyTypeSpecifier, ByteTypeSpecifier
-from ipi_ecs.control.magics import *
+from ipi_ecs.dds.subsystem import SubsystemInfo
+from ipi_ecs.dds.types import PropertyTypeSpecifier, ByteTypeSpecifier
+from ipi_ecs.dds.magics import *
 
 class SubsystemHandle:
-    def __init__(self, subsystem: "ControlServerClient._RegisteredSubsystem"):
+    def __init__(self, subsystem: "DDSClient._RegisteredSubsystem"):
         self.__subsystem = subsystem
 
     def get_info(self):
@@ -146,7 +146,7 @@ class _LocalProperty(_KVHandlerBase):
             self.__property.set_type(p_type)
 
         value = property(__read, __write, __del)
-    def __init__(self, key : str, subsystem: "ControlServerClient._RegisteredSubsystem", write = True, read = True, send = False):
+    def __init__(self, key : str, subsystem: "DDSClient._RegisteredSubsystem", write = True, read = True, send = False):
         self.__key = key
         self.__writable = write
         self.__readable = read
@@ -225,7 +225,7 @@ class _RemoteProperty:
             self.__property.set_type(p_type)
 
         value = property(__read, __write, __del)
-    def __init__(self, key : str, subsystem: "ControlServerClient._RegisteredSubsystem", remote : uuid.UUID, subscribe = True):
+    def __init__(self, key : str, subsystem: "DDSClient._RegisteredSubsystem", remote : uuid.UUID, subscribe = True):
         self.__key = key
         self.__subsystem = subsystem
         self.__remote = remote
@@ -300,7 +300,7 @@ class _RemoteProperty:
     def get_key(self):
         return self.__key
 
-class ControlServerClient:
+class DDSClient:
     __E_MESSAGE = 0
     __E_TRANSACT_DATA_AVAIL = 1
     __E_CONNECTED = 2
@@ -312,7 +312,7 @@ class ControlServerClient:
     REG_STATE_NOT_REGISTERED = 2
 
     class _RegisteredSubsystem:
-        def __init__(self, info: "SubsystemInfo", client: "ControlServerClient"):
+        def __init__(self, info: "SubsystemInfo", client: "DDSClient"):
             self.__info = info
             self.__client = client
 
@@ -380,7 +380,7 @@ class ControlServerClient:
 
     class __KVOpHandle:
         class _KVOpReturnHandle:
-            def __init__(self, handle : "ControlServerClient.__KVOpHandle"):
+            def __init__(self, handle : "DDSClient.__KVOpHandle"):
                 self.__handle = handle
 
             def get_state(self):
@@ -636,7 +636,7 @@ class ControlServerClient:
         
         awaiter.call(state=s, reason=reason)
     
-    def __on_set_kv_returned_handle(self, op_handle : "ControlServerClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
+    def __on_set_kv_returned_handle(self, op_handle : "DDSClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
             print("Set KV NAK'd!!")
             op_handle.set_state(KV_STATE_REJ)
@@ -678,7 +678,7 @@ class ControlServerClient:
         
         awaiter.call(state=s, reason=reason, value=value)
     
-    def __on_get_kv_returned_handle(self, op_handle : "ControlServerClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
+    def __on_get_kv_returned_handle(self, op_handle : "DDSClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
             print("Get KV NAK'd!!")
             op_handle.set_state(KV_STATE_REJ)

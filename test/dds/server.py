@@ -1,8 +1,8 @@
 import time
 
-import ipi_ecs.control.server as server
+import ipi_ecs.dds.server as server
 
-server = server.ControlServer()
+server = server.DDSServer()
 server.start()
 
 time.sleep(1)

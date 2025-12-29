@@ -9,12 +9,12 @@ import ipi_ecs.core.daemon as daemon
 import ipi_ecs.core.mt_events as mt_events
 import ipi_ecs.core.transactions as transactions
 import ipi_ecs.core.segmented_bytearray as segmented_bytearray
-from ipi_ecs.control.subsystem import SubsystemInfo
-from ipi_ecs.control.magics import *
+from ipi_ecs.dds.subsystem import SubsystemInfo
+from ipi_ecs.dds.magics import *
 
 ENV_DDS_PORT = "IPI_ECS_DDS_PORT"
 
-class ControlServer:
+class DDSServer:
     __E_ON_CLIENT_CONNECT = 0
     __E_ON_CLIENT_DISCONNECT = 1
 
@@ -25,7 +25,7 @@ class ControlServer:
         __E_TRANSACT_DATA_AVAIL = 3
         __E_NEW_TRANSACT = 4
 
-        def __init__(self, sock: tcp.TCPServerSocket, server: "ControlServer"):
+        def __init__(self, sock: tcp.TCPServerSocket, server: "DDSServer"):
             self.__socket = sock
             self.__server = server
 
@@ -171,7 +171,7 @@ class ControlServer:
             self.__kv_store = dict()
             self.__kv_subscribers = dict()
 
-        def bind_client(self, client : "ControlServer._ClientConnection"):
+        def bind_client(self, client : "DDSServer._ClientConnection"):
             if self.__client is not None and self.__client.ok():
                 return False
             
@@ -301,7 +301,7 @@ class ControlServer:
             if e == self.__E_ON_CLIENT_DISCONNECT:
                 self.__disconnected_client()
 
-    def _got_client_uuid(self, client : "ControlServer._ClientConnection"):
+    def _got_client_uuid(self, client : "DDSServer._ClientConnection"):
         self.__clients_uuid[client.get_uuid()] = client
 
     def _register_subsystem(self, c_uuid : uuid.UUID, s_info : SubsystemInfo):

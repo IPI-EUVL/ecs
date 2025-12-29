@@ -10,7 +10,7 @@ from typing import Any
 from ipi_ecs.logging.journal import resolve_log_dir
 from ipi_ecs.logging.logger_server import run_logger_server
 from ipi_ecs.logging.reader import JournalReader
-from ipi_ecs.control.server import ControlServer
+from ipi_ecs.dds.server import DDSServer
 
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
 
@@ -151,7 +151,7 @@ def cmd_log_browse(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_server(args: argparse.Namespace) -> int:
-    m_server = ControlServer(args.host, args.port)
+    m_server = DDSServer(args.host, args.port)
     m_server.start()
 
     time.sleep(0.1)
@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.set_defaults(fn=cmd_log_browse)
 
     # server
-    ps = sub.add_parser("server", help="Run the ECS DDS control server.")
+    ps = sub.add_parser("server", help="Run the ECS DDS server.")
     ps.add_argument("--host", default="0.0.0.0")
     ps.add_argument("--port", type=int, default=None)
     ps.set_defaults(fn=cmd_server)
