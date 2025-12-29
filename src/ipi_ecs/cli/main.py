@@ -12,6 +12,8 @@ from ipi_ecs.logging.logger_server import run_logger_server
 from ipi_ecs.logging.reader import JournalReader
 from ipi_ecs.dds.server import DDSServer
 
+import ipi_ecs.cli.commands.echo as echo
+
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
 
 
@@ -206,6 +208,12 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--host", default="0.0.0.0")
     ps.add_argument("--port", type=int, default=None)
     ps.set_defaults(fn=cmd_server)
+
+    ps = sub.add_parser("echo", help="Run the ECS DDS server.")
+    ps.add_argument("--sys", type=str)
+    ps.add_argument("--key", type=str)
+    ps.add_argument("--interval", type=int, default=1)
+    ps.set_defaults(fn=echo.main)
 
     return p
 
