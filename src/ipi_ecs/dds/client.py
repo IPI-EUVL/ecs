@@ -33,6 +33,9 @@ class SubsystemHandle:
     
     def get_kv(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
         return self.__subsystem.get_kv(target_uuid, key, ret)
+    
+    def get_kv_desc(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
+        return self.__subsystem.get_kv_desc(target_uuid, key, ret)
             
     def set_kv(self, target_uuid : uuid.UUID, key : bytes, val: bytes, ret = KVP_RET_AWAIT):
         return self.__subsystem.set_kv(target_uuid, key, val, ret)
@@ -45,6 +48,9 @@ class _KVHandlerBase:
         pass
 
     def get_handle(self):
+        pass
+
+    def get_type_descriptor(self):
         pass
 
 class _KVHandler:
@@ -74,17 +80,17 @@ class _KVHandler:
 
     def remote_set(self, value: bytes):
         if self.__on_set is None:
-            return (KV_STATE_REJ, b"Value is write-only")
+            return (TRANSOP_STATE_REJ, b"Value is write-only")
         
         return self.__on_set(self.__handle, self.__p_type.parse(value))
         
     def remote_get(self):
         if self.__on_get is None:
-            return (KV_STATE_REJ, b"Value is read-only")
+            return (TRANSOP_STATE_REJ, b"Value is read-only")
         
         state, ret = self.__on_get(self.__handle)
 
-        if state == KV_STATE_OK:
+        if state == TRANSOP_STATE_OK:
             return (state, self.__p_type.encode(ret))
         
         return (state, ret)
@@ -103,6 +109,9 @@ class _KVHandler:
 
     def get_handle(self):
         return self.__handle
+    
+    def get_type_descriptor(self):
+        return segmented_bytearray.encode([self.__p_type.encode_type(), self.__key, False.to_bytes(length=1, byteorder="big")])
 
     
 class _LocalProperty(_KVHandlerBase):
@@ -122,6 +131,10 @@ class _LocalProperty(_KVHandlerBase):
         def set_type(self, p_type : PropertyTypeSpecifier):
             self.__property.set_type(p_type)
 
+        def on_new_data_received(self, func):
+            self.__property.on_new_data_received(func)
+        
+
         value = property(__read, __write, __del)
     def __init__(self, key : str, subsystem: "DDSClient._RegisteredSubsystem", write = True, read = True, send = False):
         self.__key = key
@@ -129,6 +142,8 @@ class _LocalProperty(_KVHandlerBase):
         self.__readable = read
         self.__subsystem = subsystem
         self.__send = send
+
+        self.__new_data_handler = None
 
         self.__p_type = ByteTypeSpecifier()
 
@@ -141,24 +156,27 @@ class _LocalProperty(_KVHandlerBase):
 
     def remote_set(self, value : bytes):
         if not self.__writable:
-            return (KV_STATE_REJ, b"Value is read-only")
+            return (TRANSOP_STATE_REJ, b"Value is read-only")
         
         try:
             self.__p_type.parse(value)
         except ValueError:
-            return (KV_STATE_REJ, b"Value is not valid for property type")
+            return (TRANSOP_STATE_REJ, b"Value is not valid for property type")
+        
+        if self.__new_data_handler is not None:
+            self.__new_data_handler(self.__p_type.parse(value))
         
         self.__value = value
-        return (KV_STATE_OK, bytes())
+        return (TRANSOP_STATE_OK, bytes())
 
     def remote_get(self):
         if not self.__readable:
-            return (KV_STATE_REJ, b"Value is write-only")
+            return (TRANSOP_STATE_REJ, b"Value is write-only")
         
         if self.__value is None:
-            return (KV_STATE_REJ, b"Value has not been set yet!")
+            return (TRANSOP_STATE_REJ, b"Value has not been set yet!")
         
-        return (KV_STATE_OK, self.__value)
+        return (TRANSOP_STATE_OK, self.__value)
     
     def handle_set_value(self, value):
         encoded = None
@@ -170,7 +188,7 @@ class _LocalProperty(_KVHandlerBase):
         self.__value = encoded
 
         if self.__send:
-            self.__subsystem.get_client()._set_kv_handle(self.__key, self.__value, self.__subsystem.get_uuid(), self.__subsystem.get_uuid())
+            self.__subsystem.get_client().set_kv(self.__key, self.__value, self.__subsystem.get_uuid(), self.__subsystem.get_uuid())
 
     def handle_get_value(self, p_type : PropertyTypeSpecifier):
         return self.__p_type.parse(self.__value)
@@ -182,7 +200,10 @@ class _LocalProperty(_KVHandlerBase):
         self.__p_type = p_type
 
     def get_type_descriptor(self):
-        return self.__p_type.encode_type()
+        return segmented_bytearray.encode([self.__p_type.encode_type(), self.__key, self.__send.to_bytes(length=1, byteorder="big")])
+    
+    def on_new_data_received(self, func):
+        self.__new_data_handler = func
     
 class _RemoteProperty:
     class __PropertyHandler:
@@ -200,6 +221,9 @@ class _RemoteProperty:
         
         def set_type(self, p_type : PropertyTypeSpecifier):
             self.__property.set_type(p_type)
+
+        def on_new_data_received(self, func):
+            self.__property.on_new_data_received(func)
 
         value = property(__read, __write, __del)
     def __init__(self, key : str, subsystem: "DDSClient._RegisteredSubsystem", remote : uuid.UUID, subscribe = True):
@@ -222,6 +246,9 @@ class _RemoteProperty:
             self.__p_type.parse(value)
         except ValueError:
             return
+        
+        if self.__new_data_handler is not None:
+            self.__new_data_handler(self.__p_type.parse(value))
         
         self.__value = value
     
@@ -250,10 +277,10 @@ class _RemoteProperty:
             return None
 
         start = time.time()
-        while handle.get_state() == KV_STATE_PENDING and time.time() - start < 1.0:
+        while handle.get_state() == TRANSOP_STATE_PENDING and time.time() - start < 1.0:
             time.sleep(0.01)
 
-        if handle.get_state() != KV_STATE_OK:
+        if handle.get_state() != TRANSOP_STATE_OK:
             print("Failed to retrieve value: ", handle.get_reason())
             return None
 
@@ -276,6 +303,9 @@ class _RemoteProperty:
     
     def get_key(self):
         return self.__key
+    
+    def on_new_data_received(self, func):
+        self.__new_data_handler = func
 
 class DDSClient:
     __E_MESSAGE = 0
@@ -331,22 +361,15 @@ class DDSClient:
             return self.__client
         
         def get_kv(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
-            if ret == KVP_RET_AWAIT:
-                return self.__client._get_kv_await(key, target_uuid, self.get_uuid())
-            elif ret == KVP_RET_HANDLE:
-                return self.__client._get_kv_handle(key, target_uuid, self.get_uuid())
-            else:
-                raise ValueError("Invalid return type")
+            return self.__client.get_kv(key, target_uuid, self.get_uuid(), ret)
+            
+        def get_kv_desc(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
+            return self.__client.get_kv_desc(key, target_uuid, self.get_uuid(), ret)
             
         def set_kv(self, target_uuid : uuid.UUID, key : bytes, val: bytes, ret = KVP_RET_AWAIT):
-            if ret == KVP_RET_AWAIT:
-                return self.__client._set_kv_await(key, val, target_uuid, self.get_uuid())
-            elif ret == KVP_RET_HANDLE:
-                return self.__client._set_kv_handle(key, val, target_uuid, self.get_uuid())
-            else:
-                raise ValueError("Invalid return type")
+            return self.__client.set_kv(key, val, target_uuid, self.get_uuid(), ret)
             
-        def get_kv_descriptor(self):
+        def get_kv_descriptors(self):
             r = []
 
             for (k, kvp) in self.__kv_providers.items:
@@ -354,10 +377,18 @@ class DDSClient:
                 r.append(kvp.get_type_descriptor())
             
             return segmented_bytearray.encode(r)
+        
+        def get_kv_descriptor(self, key : bytes):
+            kvp = self.__kv_providers.get(key)
 
-    class __KVOpHandle:
-        class _KVOpReturnHandle:
-            def __init__(self, handle : "DDSClient.__KVOpHandle"):
+            if kvp is None:
+                return None
+            
+            return kvp.get_type_descriptor()
+
+    class __TransOpHandle:
+        class _TransOpReturnHandle:
+            def __init__(self, handle : "DDSClient.__TransOpHandle"):
                 self.__handle = handle
 
             def get_state(self):
@@ -370,7 +401,7 @@ class DDSClient:
                 return self.__handle.get_value()
             
         def __init__(self):
-            self.__state = KV_STATE_PENDING
+            self.__state = TRANSOP_STATE_PENDING
             self.__reason = None
             self.__value = None
             
@@ -393,7 +424,7 @@ class DDSClient:
             return self.__value
         
         def get_handle(self):
-            return self._KVOpReturnHandle(self)
+            return self._TransOpReturnHandle(self)
 
     def __init__(self, c_uuid : uuid.UUID, ip = "127.0.0.1"):
         self.__uuid = c_uuid
@@ -453,6 +484,7 @@ class DDSClient:
             if d[0] == MAGIC_SUBSCRIBED_UPD:
                 s_uuid, key, val = segmented_bytearray.decode(d[1:])
 
+
                 for kvs in self.__active_subscribers[uuid.UUID(bytes=s_uuid)]:
                     if kvs.get_key() == key:
                         kvs.remote_set(val)
@@ -475,6 +507,20 @@ class DDSClient:
 
         if t.get_data()[0] == TRANSACT_RSET_KV:
             self.__rset_kv(t)
+
+        if t.get_data()[0] == TRANSACT_RGET_KV_DESC:
+            s_uuid, key = segmented_bytearray.decode(t.get_data()[1:])
+            s = self.__subsystem_handles.get(uuid.UUID(bytes=s_uuid))
+            if s is None:
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
+                return
+
+            desc = s.get_kv_descriptor(key)
+            if desc is None:
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem does not contain specified key.")
+                return
+            
+            t.ret(bytes([TRANSOP_STATE_OK]) + desc)
     
     def __rget_kv(self, t: transactions.TransactionManager.IncomingTransactionHandle):
         (t_uuid, key) = segmented_bytearray.decode(t.get_data()[1:])
@@ -482,13 +528,13 @@ class DDSClient:
         t_uuid = uuid.UUID(bytes=t_uuid)
 
         if self.__subsystem_handles.get(t_uuid) is None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Specified subsystem not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
             return
 
 
         p = self.__subsystem_handles[t_uuid].get_kvp(key)
         if p is None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Specified value not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified value not found.")
             return
 
         state, data = p.remote_get()
@@ -500,12 +546,12 @@ class DDSClient:
         t_uuid = uuid.UUID(bytes=t_uuid)
 
         if self.__subsystem_handles.get(t_uuid) is None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Specified subsystem not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
             return
 
         p = self.__subsystem_handles[t_uuid].get_kvp(key)
         if p is None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Specified value not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified value not found.")
             return
 
         state, data = p.remote_set(value)
@@ -582,92 +628,56 @@ class DDSClient:
     def register_subsystem(self, s_info):
         self.__subsystem_info.append(s_info)
         return self.__registered_awaiter.get_handle()
-
-    def _set_kv_await(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID):
+    
+    def __transop(self, data, await_type = KVP_RET_AWAIT):
         if not self.__is_ready:
             return None
         
-        ret_awaiter = mt_events.Awaiter()
+        if await_type == KVP_RET_HANDLE:
+            ret_handle = self.__TransOpHandle()
 
-        self.__transactions.send_transaction(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val])).then(self.__on_set_kv_returned_await, [ret_awaiter])
-        return ret_awaiter.get_handle()
-    
-    def _set_kv_handle(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID):
-        if not self.__is_ready:
-            return None
-        
-        ret_handle = self.__KVOpHandle()
-        ret_handle.set_value(val)
+            self.__transactions.send_transaction(data).then(self.__on_transop_returned_handle, [ret_handle])
+            return ret_handle.get_handle()
+        elif await_type == KVP_RET_AWAIT:
+            ret_awaiter = mt_events.Awaiter()
 
-        self.__transactions.send_transaction(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val])).then(self.__on_set_kv_returned_handle, [ret_handle])
-        return ret_handle.get_handle()
-    
-    def __on_set_kv_returned_await(self, awaiter : mt_events.Awaiter, handle : transactions.TransactionManager.OutgoingTransactionHandle):
+            self.__transactions.send_transaction(data).then(self.__on_transop_returned_await, [ret_awaiter])
+            return ret_awaiter.get_handle()
+
+    def __on_transop_returned_await(self, awaiter : mt_events.Awaiter, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            print("Set KV NAK'd!!")
-            awaiter.call(state=KV_STATE_REJ, reason=None)
+            print("Transop NAK'd!!")
+            awaiter.call(state=TRANSOP_STATE_REJ, reason=None)
             return
 
-        s = KV_STATE_OK if handle.get_result()[0] == KV_STATE_OK else KV_STATE_REJ
-        reason = None if s == KV_STATE_OK else handle.get_result()[1:].decode("utf-8")
-        
-        awaiter.call(state=s, reason=reason)
-    
-    def __on_set_kv_returned_handle(self, op_handle : "DDSClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
-        if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            print("Set KV NAK'd!!")
-            op_handle.set_state(KV_STATE_REJ)
-            return
-
-        s = KV_STATE_OK if handle.get_result()[0] == KV_STATE_OK else KV_STATE_REJ
-        reason = None if s == KV_STATE_OK else handle.get_result()[1:].decode("utf-8")
-        
-        op_handle.set_state(s)
-        op_handle.set_reason(reason)
-
-    def _get_kv_await(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID):
-        if not self.__is_ready:
-            return None
-        
-        ret_awaiter = mt_events.Awaiter()
-
-        self.__transactions.send_transaction(bytes([TRANSACT_GET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key])).then(self.__on_get_kv_returned_await, [ret_awaiter])
-        return ret_awaiter.get_handle()
-    
-    def _get_kv_handle(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID):
-        if not self.__is_ready:
-            return None
-        
-        ret_handle = self.__KVOpHandle()
-
-        self.__transactions.send_transaction(bytes([TRANSACT_GET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key])).then(self.__on_get_kv_returned_handle, [ret_handle])
-        return ret_handle.get_handle()
-    
-    def __on_get_kv_returned_await(self, awaiter : mt_events.Awaiter, handle : transactions.TransactionManager.OutgoingTransactionHandle):
-        if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            print("Get KV NAK'd!!")
-            awaiter.call(state=KV_STATE_REJ, reason=None)
-            return
-
-        s = KV_STATE_OK if handle.get_result()[0] == KV_STATE_OK else KV_STATE_REJ
-        reason = None if s == KV_STATE_OK else handle.get_result()[1:].decode("utf-8")
-        value = None if s != KV_STATE_OK else handle.get_result()[1:]
+        s = TRANSOP_STATE_OK if handle.get_result()[0] == TRANSOP_STATE_OK else TRANSOP_STATE_REJ
+        reason = None if s == TRANSOP_STATE_OK else handle.get_result()[1:].decode("utf-8")
+        value = None if s != TRANSOP_STATE_OK else handle.get_result()[1:]
         
         awaiter.call(state=s, reason=reason, value=value)
     
-    def __on_get_kv_returned_handle(self, op_handle : "DDSClient.__KVOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
+    def __on_transop_returned_handle(self, op_handle : "DDSClient.__TransOpHandle", handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            print("Get KV NAK'd!!")
-            op_handle.set_state(KV_STATE_REJ)
+            print("Transop NAK'd!!")
+            op_handle.set_state(TRANSOP_STATE_REJ)
             return
 
-        s = KV_STATE_OK if handle.get_result()[0] == KV_STATE_OK else KV_STATE_REJ
-        reason = None if s == KV_STATE_OK else handle.get_result()[1:].decode("utf-8")
-        value = None if s != KV_STATE_OK else handle.get_result()[1:]
-        
+        s = TRANSOP_STATE_OK if handle.get_result()[0] == TRANSOP_STATE_OK else TRANSOP_STATE_REJ
+        reason = None if s == TRANSOP_STATE_OK else handle.get_result()[1:].decode("utf-8")
+        value = None if s != TRANSOP_STATE_OK else handle.get_result()[1:]
+
         op_handle.set_state(s)
         op_handle.set_reason(reason)
         op_handle.set_value(value)
+
+    def set_kv(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val]), ret_type)
+
+    def get_kv(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_GET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
+    
+    def get_kv_desc(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
     
     def __send_subsystem_info(self):
         for info in self.__subsystem_info:

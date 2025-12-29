@@ -128,6 +128,11 @@ class DDSServer:
 
                 self.__server._get_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
 
+            if t.get_data()[0] == TRANSACT_GET_KV_DESC:
+                (t_uuid, s_uuid, t_k) = segmented_bytearray.decode(t.get_data()[1:])
+
+                self.__server._get_kv_desc(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
+
         def __flush_transponder(self):
             while not self.__transactions_msg_out_queue.empty():
                 m = self.__transactions_msg_out_queue.get()
@@ -190,18 +195,18 @@ class DDSServer:
 
                         s._on_subscription_update(self.__info.get_uuid(), key, val)
 
-                t.ret(bytes([KV_STATE_OK]))
+                t.ret(bytes([TRANSOP_STATE_OK]))
                 return
             
             if self.__client is None:
-                t.ret(bytes([KV_STATE_REJ]) + b"Subsystem client is disconnected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
                 return
 
             self.__client.get_transactions().send_transaction(bytes([TRANSACT_RSET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, key, val])).then(self.__on_set_kv_returned, [t])
     
         def __on_set_kv_returned(self, t : transactions.TransactionManager.IncomingTransactionHandle, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-                t.ret(bytes([KV_STATE_REJ]) + b"Transaction rejected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Transaction rejected")
                 return
 
             t.ret(handle.get_result())    
@@ -209,18 +214,25 @@ class DDSServer:
         def on_get_kv_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
             cached = self.__kv_store.get(key)
             if cached is not None:
-                t.ret(bytes([KV_STATE_OK]) + cached)
+                t.ret(bytes([TRANSOP_STATE_OK]) + cached)
                 return
             
             if self.__client is None:
-                t.ret(bytes([KV_STATE_REJ]) + b"Subsystem client is disconnected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
                 return
             
             self.__client.get_transactions().send_transaction(bytes([TRANSACT_RGET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, key])).then(self.__on_get_kv_returned, [t])
+
+        def on_get_kv_desc_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
+            if self.__client is None:
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
+                return
+            
+            self.__client.get_transactions().send_transaction(bytes([TRANSACT_RGET_KV_DESC]) + segmented_bytearray.encode([self.get_uuid().bytes, key])).then(self.__on_get_kv_returned, [t])
     
         def __on_get_kv_returned(self, t : transactions.TransactionManager.IncomingTransactionHandle, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-                t.ret(bytes([KV_STATE_REJ]) + b"Transaction rejected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Transaction rejected")
                 return
             
             t.ret(handle.get_result())        
@@ -285,12 +297,17 @@ class DDSServer:
             if client.closed():
                 print("Removing: ", client.get_uuid())
                 self.__clients.remove(client)
+
+                if client.get_uuid() == uuid.UUID(bytes=bytes(16)):
+                    print("Client config was not finished!")
+                    continue
+
                 self.__clients_uuid.pop(client.get_uuid())
 
                 removed = True
                 while removed:
                     removed = False
-                    
+
                     for s in self.__subsystems.values():
                         if s.get_client_uuid() == client.get_uuid():
                             print("Subsystem ", s.get_uuid(), " has lost connection")
@@ -347,7 +364,7 @@ class DDSServer:
         #print("Set KV From ", r_uuid, " to ", t_uuid, " key: ", key, " value: ", val)
 
         if s == None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Target subsystem not found")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
             return
 
         s.on_set_kv_request(r_uuid, t, key, val)
@@ -358,10 +375,19 @@ class DDSServer:
         #print("Get KV From ", r_uuid, " to ", t_uuid, " key: ", key)
 
         if s == None:
-            t.ret(bytes([KV_STATE_REJ]) + b"Target subsystem not found")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
             return
 
         s.on_get_kv_request(r_uuid, t, key)
+
+    def _get_kv_desc(self, t : transactions.TransactionManager.IncomingTransactionHandle, r_uuid : uuid.UUID, t_uuid : uuid.UUID, key: bytes):
+        s = self.__subsystems.get(t_uuid)
+
+        if s == None:
+            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
+            return
+
+        s.on_get_kv_desc_request(r_uuid, t, key)
 
     def ok(self):
         return self.__daemon.is_alive()
