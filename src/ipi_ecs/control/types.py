@@ -12,10 +12,13 @@ class PropertyTypeSpecifier:
     
 class ByteTypeSpecifier(PropertyTypeSpecifier):
     def parse(self, data : bytes):
-        return data
+        return bytes(data)
     
     def encode(self, data : bytes):
-        return data
+        if type(data) != bytes:
+            raise ValueError()
+        
+        return bytes(data)
     
     def encode_type(self):
         return bytes([TYPE_BYTES])

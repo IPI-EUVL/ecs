@@ -18,8 +18,8 @@ def setup_subsystem(handle: client.SubsystemHandle):
     global remote_kv
 
     print("Registered:", handle.get_info().get_name())
-    remote_kv = handle.add_remote_kv(b"test property", uuid.uuid3(uuid.NAMESPACE_OID, "1"), True)
-    remote_kv.set_type(types.IntegerTypeSpecifier())
+    remote_kv = handle.add_remote_kv(b"test property handler", uuid.uuid3(uuid.NAMESPACE_OID, "1"), False)
+    remote_kv.set_type(types.ByteTypeSpecifier())
 
 m_client = client.ControlServerClient(uuid.uuid4())
 m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "2"), "my subsystem2")).then(setup_subsystem)
@@ -29,3 +29,4 @@ time.sleep(1)
 while m_client.ok():
     time.sleep(0.1)
     print(remote_kv.value)
+    remote_kv.value = b"set"

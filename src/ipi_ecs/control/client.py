@@ -22,8 +22,11 @@ class SubsystemHandle:
     def get_state(self):
         return self.__subsystem.get_state()
     
-    def add_kv(self, key : bytes, writable = True, readable = True, cache = False):
-        return self.__subsystem.add_kv(key, writable, readable, cache)
+    def get_kv_property(self, key : bytes, writable = True, readable = True, cache = False):
+        return self.__subsystem.get_kv_property(key, writable, readable, cache)
+    
+    def add_kv_handler(self, key : bytes):
+        return self.__subsystem.add_kv_handler(key)
     
     def add_remote_kv(self, key : bytes, s_uuid : uuid.UUID, subscribe = False):
         return self.__subsystem.add_remote_kv(s_uuid, key, subscribe)
@@ -57,7 +60,75 @@ class SubsystemInfo:
 
         return SubsystemInfo(s_uuid, name)
     
-class _LocalProperty:
+class _KVHandlerBase:
+    def remote_set(self, value):
+        pass
+
+    def remote_get(self, value):
+        pass
+
+    def get_handle(self):
+        pass
+
+class _KVHandler:
+    class KVHandle:
+        def __init__(self, handler : "_KVHandler"):
+            self.__handler = handler
+
+        def on_get(self, func):
+            self.__handler.on_get(func)
+
+        def on_set(self, func):
+            self.__handler.on_set(func)
+
+        def get_key(self):
+            return self.__handler.get_key()
+
+        
+    def __init__(self, key : bytes):
+        self.__key = key
+
+        self.__on_get = None
+        self.__on_set= None
+
+        self.__p_type = ByteTypeSpecifier()
+
+        self.__handle = self.KVHandle(self)
+
+    def remote_set(self, value: bytes):
+        if self.__on_set is None:
+            return (KV_STATE_REJ, b"Value is write-only")
+        
+        return self.__on_set(self.__handle, self.__p_type.parse(value))
+        
+    def remote_get(self):
+        if self.__on_get is None:
+            return (KV_STATE_REJ, b"Value is read-only")
+        
+        state, ret = self.__on_get(self.__handle)
+
+        if state == KV_STATE_OK:
+            return (state, self.__p_type.encode(ret))
+        
+        return (state, ret)
+        
+    def get_key(self):
+        return self.__key
+    
+    def set_type(self, p_type : PropertyTypeSpecifier):
+        self.__p_type = p_type
+
+    def on_get(self, func):
+        self.__on_get = func
+
+    def on_set(self, func):
+        self.__on_set = func
+
+    def get_handle(self):
+        return self.__handle
+
+    
+class _LocalProperty(_KVHandlerBase):
     class __PropertyHandler:
         def __init__(self, provider : "_LocalProperty"):
             self.__property = provider
@@ -188,7 +259,10 @@ class _RemoteProperty:
 
     def handle_get_value(self):
         if self.__value is not None:
-            return self.__p_type.parse(self.__value)
+            try:
+                return self.__p_type.parse(self.__value)
+            except ValueError:
+                raise ValueError("Received value type incompatible with declared value type!")
         
         if self.__subscribe:
             return None
@@ -206,7 +280,10 @@ class _RemoteProperty:
             print("Failed to retrieve value: ", handle.get_reason())
             return None
 
-        return self.__p_type.parse(handle.get_value())
+        try:
+            return self.__p_type.parse(handle.get_value())
+        except ValueError:
+            raise ValueError("Received value type incompatible with declared value type!")
     
     def get_handle(self):
         return self.__property_handler
@@ -259,8 +336,13 @@ class ControlServerClient:
         def get_kvps(self):
             return self.__kv_providers
         
-        def add_kv(self, key : bytes, writable = True, readable = True, cache = False):
+        def get_kv_property(self, key : bytes, writable = True, readable = True, cache = False):
             lp = _LocalProperty(key, self, writable, readable, cache)
+            self.__kv_providers[key] = lp
+            return lp.get_handle()
+        
+        def add_kv_handler(self, key : bytes):
+            lp = _KVHandler(key)
             self.__kv_providers[key] = lp
             return lp.get_handle()
         
