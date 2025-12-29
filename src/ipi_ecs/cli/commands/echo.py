@@ -11,8 +11,9 @@ import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 import ipi_ecs.core.mt_events as mt_events
 
 class EchoClient:
-    def __init__(self, target__uuid, key):
-        self.__target = target__uuid
+    def __init__(self, t_name, target__uuid, key):
+        self.__target = uuid.UUID(bytes=target__uuid) if target__uuid is not None else None
+        self.__t_name = t_name
         self.__key = key
         self.__run = True
 
@@ -30,6 +31,27 @@ class EchoClient:
         print("Registered:", handle.get_info().get_name())
         self.__subsystem = handle
         #remote_kv.set_type(types.IntegerTypeSpecifier())
+
+        if self.__target is not None:
+            self.__subsystem.get_kv_desc(self.__target, self.__key).then(self.__on_got_descriptor)
+        else:
+            self.__client.resolve(self.__t_name).then(self.__on_got_resolve)
+
+    def __on_got_resolve(self, state, reason, value = None):
+        if value is None:
+            print("Could not resolve name due to: ", reason)
+            self.__run = False
+            return
+        
+        if len(value) <= 1:
+            print("Could not resolve name.")
+            self.__run = False
+            return
+
+        
+        self.__target = uuid.UUID(bytes=value)
+        print("Got UUID:", self.__target)
+
         self.__subsystem.get_kv_desc(self.__target, self.__key).then(self.__on_got_descriptor)
 
     def __on_got_descriptor(self, state, reason, value = None):
@@ -63,7 +85,7 @@ class EchoClient:
         self.__nd_event.bind(c, event)
 
 def main(args: argparse.Namespace):
-    m_client = EchoClient(uuid.UUID(args.sys), args.key.encode("utf-8"))
+    m_client = EchoClient(args.name.encode("utf-8"), args.sys, args.key.encode("utf-8"))
 
     m_awaiter = mt_events.EventConsumer()
     m_client.on_new_data(m_awaiter, 0)

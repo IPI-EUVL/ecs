@@ -679,6 +679,9 @@ class DDSClient:
     def get_kv_desc(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
         return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
     
+    def resolve(self, name : bytes, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_RESOLVE]) + segmented_bytearray.encode([name]), ret_type)
+    
     def __send_subsystem_info(self):
         for info in self.__subsystem_info:
             self.__transactions.send_transaction(bytes([TRANSACT_REG_SUBSYSTEM]) + info.encode()).then(self.__transact_status_change)

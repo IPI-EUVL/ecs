@@ -212,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("echo", help="Run the ECS DDS server.")
     ps.add_argument("--sys", type=str)
     ps.add_argument("--key", type=str)
-    ps.add_argument("--interval", type=int, default=1)
+    ps.add_argument("--name", type=str, default=None)
     ps.set_defaults(fn=echo.main)
 
     return p
