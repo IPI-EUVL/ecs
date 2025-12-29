@@ -18,6 +18,7 @@ class EchoClient:
         self.__run = True
 
         self.__remote_kv = None
+        self.__type = None
 
         self.__nd_event = mt_events.Event()
 
@@ -55,6 +56,9 @@ class EchoClient:
         self.__subsystem.get_kv_desc(self.__target, self.__key).then(self.__on_got_descriptor)
 
     def __on_got_descriptor(self, state, reason, value = None):
+        if self.__type is not None:
+            return
+        
         if value is None:
             print("Could not get descriptor due to: ", reason)
             self.__run = False
@@ -84,15 +88,22 @@ class EchoClient:
     def on_new_data(self, c : mt_events.EventConsumer, event):
         self.__nd_event.bind(c, event)
 
+    def close(self):
+        self.__client.close()
+        self.__run = False
+
 def main(args: argparse.Namespace):
     m_client = EchoClient(args.name.encode("utf-8"), args.sys, args.key.encode("utf-8"))
 
     m_awaiter = mt_events.EventConsumer()
     m_client.on_new_data(m_awaiter, 0)
 
-    while m_client.ok():
-        e = m_awaiter.get(timeout=0.1)
-        if e == 0:
-            print(m_client.get_value())
+    try:
+        while m_client.ok():
+            e = m_awaiter.get(timeout=0.1)
+            if e == 0:
+                print(m_client.get_value())
+    except KeyboardInterrupt:
+        m_client.close()
 
     return 0

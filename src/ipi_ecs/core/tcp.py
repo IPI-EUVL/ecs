@@ -10,9 +10,13 @@ import ipi_ecs.core.mt_events as mt_events
 SOCKET_BUFSIZE = 1024
 DELIM = bytes([0x00])
 ESCAPE = bytes([0xff, 0x01])
+CLOSE = bytes([0x01])
+CLOSE_R = bytes([0x02])
 
 def escape_bytes(b : bytes):
     b = b.replace(ESCAPE, ESCAPE + ESCAPE)
+    b = b.replace(CLOSE, ESCAPE + CLOSE)
+    b = b.replace(CLOSE_R, ESCAPE + CLOSE_R)
     return b.replace(DELIM, ESCAPE + DELIM)
 
 def unescape_bytes(b: bytes):
@@ -31,6 +35,14 @@ def unescape_bytes(b: bytes):
         if b[s+2:s+3] == DELIM:
             #print("FOUND DELIM")
             out += DELIM
+            b = b[s+3:]
+        elif b[s+2:s+3] == CLOSE:
+            #print("FOUND DELIM")
+            out += CLOSE
+            b = b[s+3:]
+        elif b[s+2:s+3] == CLOSE_R:
+            #print("FOUND DELIM")
+            out += CLOSE_R
             b = b[s+3:]
         elif b[s+2:s+4] == ESCAPE:
             #print("FOUND ESC")
@@ -101,8 +113,10 @@ class TCPSocket:
         self._remote = None
         self.__connected = False
 
+        self._is_shutdown = False
+
         self.__recv_queue = queue.Queue()
-        self.__send_queue = queue.Queue()
+        self._send_queue = queue.Queue()
 
         self.__last_data = 0
         self.__last_send = 0
@@ -115,6 +129,7 @@ class TCPSocket:
         self.__buffer = bytes()
 
         self._closed_event = mt_events.Event()
+        self._shutdown_event = mt_events.Event()
         self._connected_event = mt_events.Event()
         self._disconnected_event = mt_events.Event()
 
@@ -124,10 +139,10 @@ class TCPSocket:
         self.__daemon.start()
 
     def __rtr(self):
-        res, _, _ = select.select([self._socket], [], [], 1)
-
         if not self.__valid():
             return False
+        
+        res, _, _ = select.select([self._socket], [], [], 1)
 
         for fd in res:
             if fd == self._socket:
@@ -176,6 +191,14 @@ class TCPSocket:
 
             if data == bytes([0x00]):
                 continue
+            if data == CLOSE_R:
+                print("Received shutdown request")
+                self._shutdown()
+                continue
+            if unescape_bytes(data) == CLOSE:
+                print("Received shutdown request")
+                self._shutdown()
+                continue
 
             self.__received(data)
 
@@ -201,27 +224,32 @@ class TCPSocket:
                 self._reconnect()
                 continue
 
-            if time.time() - self.__last_send > 1.0 and self.__send_queue.empty():
-                self.__send_queue.put(bytes([0x00]))
+            if time.time() - self.__last_send > 1.0 and self._send_queue.empty():
+                self._send_queue.put(bytes([0x00]))
 
             while True:
                 try:
-                    data = self.__send_queue.get(timeout=1)
+                    data = self._send_queue.get(timeout=1)
                 except queue.Empty:
                     break
 
                 self.__last_send = time.time()
+
+                if not self.__valid():
+                    break
 
                 try:
                     self._socket.send(data)
                 except OSError:
                     self._closed()
                     break
-
+            
     def close(self):
         """
         Stop all threads
         """
+
+        print("Closing socket.")
         self.__daemon.stop()
 
         if self._socket is not None:
@@ -235,7 +263,7 @@ class TCPSocket:
             data (bytes): Data to send
         """
 
-        self.__send_queue.put(escape_bytes(data) + bytes(DELIM))
+        self._send_queue.put(escape_bytes(data) + bytes(DELIM))
 
     def get(self, timeout=None, block=True) -> bytes:
         """
@@ -261,7 +289,7 @@ class TCPSocket:
         return self._ReceiveQueueHandle(self.__recv_queue)
     
     def get_send_queue(self):
-        return self._SendQueueHandle(self.__send_queue)
+        return self._SendQueueHandle(self._send_queue)
 
     def empty(self):
         """
@@ -337,10 +365,33 @@ class TCPSocket:
     def on_receive(self, consumer : mt_events.EventConsumer, event_id):
         self._received_event.bind(consumer, event_id)
 
+    def shutdown(self):
+        self._send_queue.put(CLOSE_R)
+        self._is_shutdown = True
 
+    def _shutdown(self):
+        self._send_queue.put(CLOSE)
+        self._is_shutdown = True
+        self.close()
+
+    def is_shutdown(self):
+        return self._is_shutdown
+    
 class TCPClientSocket(TCPSocket):
+    def __init__(self, keep_alive = True):
+        super().__init__()
+
+        self.__keep_alive = keep_alive
+        self.__p_shutdown = False
     def _reconnect(self):
         try:
+            if self._is_shutdown:
+                return
+            
+            self.__p_shutdown = False
+            if self._socket is not None:
+                self._socket.close()
+
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
 
@@ -355,11 +406,31 @@ class TCPClientSocket(TCPSocket):
         self._remote = remote
 
     def _closed(self):
-        self._disconnected()
-        print(f"Client has disconnected from {self._remote}")
+        if not self.is_shutdown() and not self.__p_shutdown:
+            print(f"Client has disconnected from {self._remote}")
+        else:
+            print(f"Connection to {self._remote} has shut down gracefully.")
+
+        if (not self.is_shutdown()) or self.__keep_alive:
+            self._disconnected()
+        else:
+            super()._closed()
+
+    def _shutdown(self):
+        self._send_queue.put(CLOSE)
+
+        if not self.__keep_alive:
+            super()._shutdown()
+        else:
+            self.__p_shutdown = True
+            self._socket.close()
+            self._socket = None
 
     def is_closed(self):
-        return False
+        if not self.is_shutdown():
+            return False
+        
+        return super().is_closed()
 
 class TCPServerSocket(TCPSocket):
     def __init__(self, sock, remote):
@@ -438,11 +509,10 @@ class TCPServer:
         """
         Stop all threads and close all client handlers constructed by this server
         """
-        self.__daemon.stop()
-
         for handler in self.__clients:
-            handler.close()
+            handler.shutdown()
 
+        self.__daemon.stop()
         self.__socket.close()
 
     def ok(self):

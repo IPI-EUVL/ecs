@@ -39,7 +39,13 @@ time.sleep(1)
 #p2.value = b"my value2"
 
 i = 0
-while m_client.ok():
-    time.sleep(1)
-    p.value = i
-    i += 1
+
+try:
+    while m_client.ok():
+        time.sleep(1)
+        p.value = i
+        i += 1
+except KeyboardInterrupt:
+    pass
+finally:
+    m_client.close()

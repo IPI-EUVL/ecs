@@ -169,6 +169,9 @@ class DDSServer:
         def closed(self):
             return self.__socket.is_closed()
         
+        def is_shutdown(self):
+            return self.__socket.is_shutdown()
+        
         def ok(self):
             return not self.__socket.is_closed() and self.__daemon.is_alive()
             #self.__socket.put(bytes([MAGIC_HANDSHAKE_SERVER]))
@@ -298,6 +301,9 @@ class DDSServer:
     def __disconnected_client(self):
         for client in self.__clients:
             if client.closed():
+                if not client.is_shutdown():
+                    print("Client has abruptly disconnected!")
+                
                 print("Removing: ", client.get_uuid())
                 self.__clients.remove(client)
 
@@ -397,7 +403,11 @@ class DDSServer:
     
     def _subscribe(self, r_uuid: uuid.UUID, s_uuid: uuid.UUID, key: bytes):
         s = self.__subsystems.get(s_uuid)
+        r = self.__clients_uuid.get(r_uuid)
 
+        if r is None:
+            print(f"Target receiver {r_uuid} to add subscriber not found, who are you?!")
+            return
 
         if s is None:
             self.__pending_subscribers.append((r_uuid, s_uuid, key))

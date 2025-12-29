@@ -157,10 +157,14 @@ def cmd_server(args: argparse.Namespace) -> int:
     m_server.start()
 
     time.sleep(0.1)
-    while m_server.ok():
-        time.sleep(1)
 
-    m_server.close()
+    try:
+        while m_server.ok():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        m_server.close()
 
     return 0
 

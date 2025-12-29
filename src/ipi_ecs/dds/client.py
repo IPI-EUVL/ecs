@@ -619,6 +619,12 @@ class DDSClient:
         self.__refresh_subscriptions()
         
     def close(self):
+        print("Shutting down socket")
+        self.__socket.shutdown()
+
+        while not self.__socket.is_closed():
+            time.sleep(0.1)
+
         self.__daemon.stop()
         self.__socket.close()
 
