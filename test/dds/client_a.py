@@ -32,7 +32,7 @@ def setup_subsystem(handle: client.SubsystemHandle):
     p.value = 0
 
 m_client = client.DDSClient(uuid.uuid4())
-m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "1"), "my subsystem")).then(setup_subsystem)
+m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "1"), "my subsystem", True)).then(setup_subsystem)
 
 time.sleep(1)
 #p2 = client.add_kv(b"test property2")

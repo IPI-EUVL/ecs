@@ -228,6 +228,9 @@ class DDSServer:
         def get_uuid(self):
             return self.__info.get_uuid()
         
+        def get_info(self):
+            return self.__info
+        
         def get_client_uuid(self):
             if self.__client is None:
                 return None
@@ -284,10 +287,20 @@ class DDSServer:
                 self.__clients.remove(client)
                 self.__clients_uuid.pop(client.get_uuid())
 
-                for s in self.__subsystems.values():
-                    if s.get_client_uuid() == client.get_uuid():
-                        print("Subsystem ", s.get_uuid(), " has lost connection")
-                        s.bind_client(None)
+                removed = True
+                while removed:
+                    removed = False
+                    
+                    for s in self.__subsystems.values():
+                        if s.get_client_uuid() == client.get_uuid():
+                            print("Subsystem ", s.get_uuid(), " has lost connection")
+                            s.bind_client(None)
+
+                            if s.get_info().get_temporary():
+                                self.__subsystems.pop(s.get_uuid())
+                            
+                                removed = True
+                                break
                 
                 break
 
@@ -317,6 +330,9 @@ class DDSServer:
                     self.__pending_subscribers.remove((r_uuid, s_uuid, key))
 
             print(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})")
+
+            if s_info.get_temporary():
+                print("Subsystem is TEMPORARY. It will be removed once it's client disconnects!")
 
 
         ok = subsystem.bind_client(self.__clients_uuid[c_uuid])
