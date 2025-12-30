@@ -42,8 +42,10 @@ class QueryOptions:
     since: str | None = None                    # human string
     until: str | None = None                    # human string
     l_type: str | None = None
+    exclude_types: list[str] | None = None
     level: str | None = None
     min_level: str | None = None                # requires l_type
+
 
     # sorting / limits
     order_by: str = "line"
@@ -70,12 +72,100 @@ class QueryOptions:
             ts_min_ns=ts_min,
             ts_max_ns=ts_max,
             l_type=self.l_type,
+            l_type_not=self.exclude_types,
             level=self.level,
             min_level_num=min_level_num,
             order_by=self.order_by,
             desc=self.desc,
             limit=self.limit,
         )
+
+RICH_STYLE: dict[str, str] = {
+    "error": "bold red",
+    "warn": "yellow",
+    "info": "cyan",
+    "debug": "dim",
+    "exp_hi": "bold green",
+    "exp": "green",
+    "exp_low": "white",
+    "rec": "dim",
+    "default": "",
+}
+
+def get_format_color(l_type: str | None, level: str | None) -> str:
+    """
+    Return a stable style token for a log line based on l_type/level.
+
+    This token is intentionally frontend-agnostic; map it to prompt_toolkit/Rich styles.
+    """
+    lt = (l_type or "").upper()
+    lv = (level or "").upper()
+
+    # Noisy telemetry: keep muted if shown.
+    if lt == "REC":
+        return "rec"
+
+    # Software/system messages
+    if lt == "SOFTW":
+        if lv in {"CRITICAL", "FATAL", "ERROR"}:
+            return "error"
+        if lv in {"WARN", "WARNING"}:
+            return "warn"
+        if lv in {"INFO"}:
+            return "info"
+        return "debug"
+
+    # Experiment journal
+    if lt == "EXP":
+        if lv in {"MILESTONE", "IMPORTANT", "MAJOR"}:
+            return "exp_hi"
+        if lv in {"STEP", "ACTION"}:
+            return "exp"
+        return "exp_low"
+
+    # Fallback: color by common severity strings even if type is unknown
+    if lv in {"CRITICAL", "FATAL", "ERROR"}:
+        return "error"
+    if lv in {"WARN", "WARNING"}:
+        return "warn"
+    if lv in {"INFO"}:
+        return "info"
+
+    return "default"
+
+
+# prompt_toolkit Style.from_dict() keys (used as "class:log.error", etc.)
+PT_STYLE: dict[str, str] = {
+    "log.error": "fg:#ff4444 bold",
+    "log.warn": "fg:#ffaa00",
+    "log.info": "fg:#44bbff",
+    "log.debug": "fg:#777777",
+    "log.exp_hi": "fg:#44ff88 bold",
+    "log.exp": "fg:#44ff88",
+    "log.exp_low": "fg:#cccccc",
+    "log.rec": "fg:#666666",
+    "log.default": "",
+
+    "log.lineno": "fg:#777777",
+    "log.ts": "fg:#777777",
+    "log.uuid": "fg:#7f7f7f",
+    "log.subsystem": "fg:#44bbff",
+}
+
+
+
+def get_subsystem(rec: dict[str, Any]) -> str:
+    """
+    Extract subsystem string from a record.
+
+    Convention: subsystem is stored under record["data"]["subsystem"].
+    """
+    data = rec.get("data") or {}
+    if isinstance(data, dict):
+        s = data.get("subsystem")
+        if isinstance(s, str) and s:
+            return s
+    return "(no subsystem)"
 
 
 def format_line(line: LogLine) -> str:
@@ -87,7 +177,8 @@ def format_line(line: LogLine) -> str:
     l_type = rec.get("l_type", "?")
     level = rec.get("level", "?")
     msg = rec.get("msg", "")
-    return f"{line.line:>10}  {fmt_ns_local(ts)}  [{l_type}/{level}]  {ou}: {msg}"
+    s = get_subsystem(rec)
+    return f"{line.line:>10}  {fmt_ns_local(ts)}  [{l_type}/{level}]  {ou} {s} : {msg}"
 
 
 class ArchiveView:

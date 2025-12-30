@@ -12,7 +12,7 @@ time.sleep(0.1)
 c = client.LogClient(sock)
 i = 0
 while True:
-    c.log(f"mewssage, this is {i}")
+    c.log(f"mewssage, this is {i}", level="WHATEVER", subsystem= "test")
     print(f"mewssage, this is {i}")
     i+=1
     time.sleep(1)

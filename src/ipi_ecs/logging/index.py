@@ -124,6 +124,7 @@ class SQLiteIndex:
         ts_min_ns: int | None = None,
         ts_max_ns: int | None = None,
         l_type: str | None = None,
+        l_type_not: list[str] | None = None,
         level: str | None = None,
         min_level_num: int | None = None,
         order_by: str = "line",
@@ -154,6 +155,11 @@ class SQLiteIndex:
         if l_type is not None:
             clauses.append("l_type = ?")
             params.append(l_type)
+        if l_type_not:
+            lt = list(l_type_not)
+            placeholders = ",".join(["?"] * len(lt))
+            clauses.append(f"l_type NOT IN ({placeholders})")
+            params.extend(lt)
         if level is not None:
             clauses.append("level = ?")
             params.append(level)

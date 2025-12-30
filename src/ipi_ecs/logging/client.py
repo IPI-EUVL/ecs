@@ -9,9 +9,9 @@ from ipi_ecs.logging.protocol import encode_log_record
 
 
 class LogClient:
-    def __init__(self, sock, *, origin_uuid: str | None = None):
+    def __init__(self, sock, *, origin_uuid: uuid.UUID | None = None):
         self._sock = sock
-        self._origin_uuid = origin_uuid or str(uuid.uuid4())
+        self._origin_uuid = origin_uuid or uuid.uuid4()
         self._seq = 0
 
     @property
@@ -38,7 +38,7 @@ class LogClient:
         record: dict[str, Any] = {
             "v": 1,  # record schema version
             "origin": {
-                "uuid": self._origin_uuid,
+                "uuid": str(self._origin_uuid),
                 "ts_ns": origin_ts_ns if origin_ts_ns is not None else time.time_ns(),
             },
             "seq": self._seq,

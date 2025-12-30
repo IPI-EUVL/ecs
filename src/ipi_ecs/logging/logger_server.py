@@ -24,7 +24,7 @@ def _wrap_unknown(payload: bytes, reason: str) -> dict[str, Any]:
     return {
         "v": 1,
         "level": "WARN",
-        "msg": "Unparsed/unknown log payload",
+        "msg": "Unparsed/unknown log payload:" + reason,
         "data": {"reason": reason, "raw_b64": base64.b64encode(payload).decode("ascii")},
     }
 
