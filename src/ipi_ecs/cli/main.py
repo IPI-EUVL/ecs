@@ -2,430 +2,116 @@
 from __future__ import annotations
 
 import argparse
-import sys
+import os
 import time
 from pathlib import Path
+from typing import Any
 
+from ipi_ecs.logging.journal import resolve_log_dir
 from ipi_ecs.logging.logger_server import run_logger_server
-from ipi_ecs.logging.viewer import LogViewer, QueryOptions, format_line, get_format_color, PT_STYLE, RICH_STYLE, get_subsystem
-from ipi_ecs.logging.timefmt import fmt_ns_local
+from ipi_ecs.logging.reader import JournalReader
 from ipi_ecs.dds.server import DDSServer
 
 import ipi_ecs.cli.commands.echo as echo
+import ipi_ecs.cli.commands.log_query as log_query
+from ipi_ecs.logging.timefmt import parse_time_to_ns, fmt_ns_local
+from ipi_ecs.logging.index import DEFAULT_LEVEL_MAP
 
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
 
 
+def build_query_kwargs(args):
+    ts_min = parse_time_to_ns(args.since) if args.since else None
+    ts_max = parse_time_to_ns(args.until) if args.until else None
 
-# Optional colored output for non-interactive commands (query/follow/show).
-try:
-    from rich.console import Console
-    from rich.text import Text
-except Exception:  # pragma: no cover
-    Console = None  # type: ignore
-    Text = None  # type: ignore
+    line_min = args.line_from
+    line_max = (args.line_to + 1) if args.line_to is not None else None  # inclusive -> exclusive
 
-_RICH_CONSOLE = Console() if Console is not None else None
+    min_level_num = None
+    if args.min_level is not None:
+        if not args.l_type:
+            raise SystemExit("--min-level requires --type (ordering is type-specific)")
+        min_level_num = DEFAULT_LEVEL_MAP.get(args.l_type, {}).get(args.min_level, 0)
 
-
-def _use_color(args: argparse.Namespace) -> bool:
-    mode = getattr(args, "color", "auto")
-    if mode == "never":
-        return False
-    if mode == "always":
-        return True
-    # auto
-    return bool(sys.stdout.isatty()) and _RICH_CONSOLE is not None
-
-
-def print_log_line_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> None:
-    """
-    Print a LogLine with coloring and subsystem display using Rich (Windows-friendly).
-    Falls back to plain text if Rich isn't available.
-    """
-    if _RICH_CONSOLE is None:
-        print(format_line(ln))
-        return
-
-    rec = ln.record
-    origin = rec.get("origin", {}) or {}
-    ts_ns = origin.get("ts_ns")
-    uuid = origin.get("uuid", "?")
-    l_type = rec.get("l_type", "?")
-    level = rec.get("level", "?")
-    msg = rec.get("msg", "")
-
-    subsystem = get_subsystem(rec)
-
-    token = get_format_color(l_type, level)
-    sev_style = RICH_STYLE.get(token, "")
-
-    t = Text()
-    t.append(f"{ln.line:>10}  ", style="dim")
-    t.append(f"{fmt_ns_local(ts_ns)}  ", style="dim")
-    t.append(f"[{l_type}/{level}]  ", style=sev_style)
-
-    if (show_uuids or subsystem == "(no subsystem)") and not hide_uuids:
-        t.append(f"{uuid} ", style="magenta")
-
-    t.append(f"{subsystem}: ", style="cyan" if subsystem != "(no subsystem)" else "magenta")
-    t.append(msg, style=sev_style if token in {"error", "warn"} else "")
-
-    _RICH_CONSOLE.print(t)
-
-
-
-def _default_exclude_types(args: argparse.Namespace) -> list[str]:
-    # If the user explicitly requests a type, don't apply default exclusions.
-    if getattr(args, "l_type", None) is not None:
-        return list(getattr(args, "exclude_types", []) or [])
-    
-    # If user asked to include rec, also don't apply default rec exclusion.
-    if getattr(args, "include_rec", False):
-        return list(getattr(args, "exclude_types", []) or [])
-    
-    # If the user provided any explicit exclude-type flags, respect them.
-    ex = list(getattr(args, "exclude_types", []) or [])
-    if ex:
-        if "REC" not in ex:
-            ex.append("REC")  # Add default exclude unless specifically included
-        return ex
-    
-    # Default: hide telemetry from human-facing views.
-    return ["REC"]
-
-
-# ----------------------------
-# Commands
-# ----------------------------
-def cmd_logger(args: argparse.Namespace) -> int:
-    """
-    Intentionally pass args.log_dir through as-is (can be None).
-    Let logger_server.py decide fallback to env var / platformdirs.
-    """
-    run_logger_server(
-        (args.host, args.port),
-        args.log_dir,  # may be None
-        rotate_max_bytes=args.rotate_max_mb * 1024 * 1024,
-    )
-    return 0
-
-def cmd_log_show(args: argparse.Namespace) -> int:
-    """
-    Print logs in [start, end) by absolute global line number.
-    """
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    view = viewer.open_archive(args.archive)
-    opts = QueryOptions(line_from=args.start, line_to=args.end - 1)
-    use_color = _use_color(args)
-    show_uuids = getattr(args, 'show_uuids', False)
-    hide_uuids = getattr(args, 'never_show_uuids', False)
-
-
-    for ln in view.query(opts):
-        print_log_line_rich(ln, show_uuids=show_uuids, hide_uuids=hide_uuids) if use_color else print(format_line(ln))
-    return 0
-
-def cmd_log_query(args: argparse.Namespace) -> int:
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    view = viewer.open_archive(args.archive)
-    opts = QueryOptions(
+    return dict(
+        line_min=line_min,
+        line_max=line_max,
         uuid=args.uuid,
-        line_from=args.line_from,
-        line_to=args.line_to,
-        since=args.since,
-        until=args.until,
+        ts_min_ns=ts_min,
+        ts_max_ns=ts_max,
         l_type=args.l_type,
-        exclude_types=_default_exclude_types(args),
         level=args.level,
-        min_level=args.min_level,
+        min_level_num=min_level_num,
         order_by=args.order_by,
         desc=args.desc,
         limit=args.limit,
     )
-    use_color = _use_color(args)
-    show_uuids = getattr(args, 'show_uuids', False)
-    hide_uuids = getattr(args, 'never_show_uuids', False)
+
+def fmt(line: int, rec: dict) -> str:
+    origin = rec.get("origin", {}) or {}
+    ts = origin.get("ts_ns")
+    ou = origin.get("uuid", "?")
+    l_type = rec.get("l_type", "?")
+    level = rec.get("level", "?")
+    msg = rec.get("msg", "")
+    return f"{line:>10}  {fmt_ns_local(ts)}  [{l_type}/{level}]  {ou}: {msg}"
 
 
-    for ln in view.query(opts):
-        print_log_line_rich(ln, show_uuids=show_uuids, hide_uuids=hide_uuids) if use_color else print(format_line(ln))
+def cmd_logger(args: argparse.Namespace) -> int:
+    log_dir = resolve_log_dir(args.log_dir, ENV_LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_logger_server((args.host, args.port), log_dir, rotate_max_bytes=args.rotate_max_mb * 1024 * 1024)
     return 0
+
+
+def cmd_log_show(args: argparse.Namespace) -> int:
+    d = resolve_log_dir(args.log_dir, ENV_LOG_DIR)
+    r = JournalReader(d)
+    recs = r.read_between(args.start, args.end)
+    for rec in recs:
+        print(fmt(rec))
+    return 0
+
 
 def cmd_log_follow(args: argparse.Namespace) -> int:
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    view = viewer.open_archive(args.archive)
-    opts = QueryOptions(
-        uuid=args.uuid,
-        line_from=args.line_from,
-        line_to=args.line_to,
-        since=args.since,
-        until=args.until,
-        l_type=args.l_type,
-        exclude_types=_default_exclude_types(args),
-        level=args.level,
-        min_level=args.min_level,
-    )
-    use_color = _use_color(args)
-    show_uuids = getattr(args, 'show_uuids', False)
-    hide_uuids = getattr(args, 'never_show_uuids', False)
+    """
+    Tail across segments. This does NOT require prompt_toolkit; it just prints.
+    """
+    d = resolve_log_dir(args.log_dir, ENV_LOG_DIR)
+    r = JournalReader(d)
 
+    # Start position: either user-provided or "near end"
+    if args.start is not None:
+        pos = args.start
+    else:
+        # best-effort: jump near the end using manifest's next_line
+        pos = max(0, r.next_line - args.tail)
 
-    for ln in view.follow(opts, tail=args.tail, batch=args.batch, poll=args.poll):
-        print_log_line_rich(ln, show_uuids=show_uuids, hide_uuids=hide_uuids) if use_color else print(format_line(ln))
-    return 0
+    while True:
+        recs = r.read_between(pos, pos + args.batch)
+        if recs:
+            for rec in recs:
+                print(fmt(rec))
+            pos += len(recs)
+            continue
+
+        # no new records; wait and try again
+        time.sleep(args.poll)
+
 
 def cmd_log_browse(args: argparse.Namespace) -> int:
     """
-    Less-like viewer using prompt_toolkit, backed by the SQLite index.
-
-    - Starts at the end (latest logs within the *filtered* range).
-    - Up/Down (k/j) scroll by ONE matching log line indefinitely.
-    - PageUp/PageDown jump by one window.
-    - g jumps to start (first matching line); G jumps to end (last page); q quits.
-
-    Rendering:
-      Uses prompt_toolkit formatted text so colors work on Windows (no ANSI hacks).
+    Less-like viewer using prompt_toolkit.
     """
     from prompt_toolkit.application import Application
-    from prompt_toolkit.application.current import get_app
-    from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.layout.margins import ScrollbarMargin
-    from prompt_toolkit.styles import Style
-
-    import shutil
-
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    view = viewer.open_archive(args.archive)
-
-    base = QueryOptions(
-        uuid=args.uuid,
-        line_from=args.line_from,
-        line_to=args.line_to,
-        since=args.since,
-        until=args.until,
-        l_type=args.l_type,
-        exclude_types=_default_exclude_types(args),
-        level=args.level,
-        min_level=args.min_level,
-    )
-
-    kb = KeyBindings()
-
-    # Backing storage for the current page (list[LogLine])
-    rows = []
-    top_line: int | None = None
-
-    # FormattedText fragments for display
-    fragments: list[tuple[str, str]] = []
-
-    always_show_uuids = args.show_uuids
-    never_show_uuids = args.never_show_uuids
-
-    def page_size() -> int:
-        """
-        Number of log lines to render per screen page.
-        Prefer prompt_toolkit's size when running, otherwise use OS terminal size.
-        """
-        try:
-            rows_term = get_app().output.get_size().rows
-            return max(5, min(args.window, max(5, rows_term - 1)))
-        except Exception:
-            # fallback for initial load before app is running
-            h = getattr(shutil.get_terminal_size(fallback=(80, 24)), "lines", 24)
-            return max(5, min(args.window, max(5, h - 1)))
-
-    def end_exclusive() -> int:
-        """Exclusive upper bound for browsing, respecting --to if provided."""
-        end = view.next_line()
-        if base.line_to is not None:
-            end = min(end, base.line_to + 1)
-        return end
-
-    def _line_fragments(x) -> list[tuple[str, str]]:
-        rec = x.record
-        origin = rec.get("origin", {}) or {}
-        ts = origin.get("ts_ns")
-        ou = origin.get("uuid", "?")
-        l_type = rec.get("l_type", "?")
-        level = rec.get("level", "?")
-        msg = rec.get("msg", "")
-        s = get_subsystem(rec)
-
-        #print(rec)
-        #print(s)
-
-        token = get_format_color(l_type, level)
-        sev_style = f"class:log.{token}"
-
-        out: list[tuple[str, str]] = []
-        out.append(("class:log.lineno", f"{x.line:>10} "))
-        out.append(("class:log.ts", f"{fmt_ns_local(ts)} "))
-        out.append((sev_style, f"[{l_type}/{level}] "))
-
-        if (always_show_uuids or s == "(no subsystem)") and not never_show_uuids:
-            out.append(("class:log.uuid", f"{ou} "))
-
-        out.append(("class:log.subsystem" if s != "(no subsystem)" else "class:log.uuid", f"{s}: "))
-        out.append((sev_style if token in {"error", "warn"} else "", msg))
-        out.append(("", "\n"))
-        return out
-
-    def render() -> None:
-        nonlocal fragments
-        if not rows:
-            fragments = [("", "(no data)\n")]
-        else:
-            fr: list[tuple[str, str]] = []
-            for x in rows:
-                fr.extend(_line_fragments(x))
-            fragments = fr
-        try:
-            get_app().invalidate()
-        except Exception:
-            pass
-
-    def load_from(line_min: int) -> None:
-        """Load a page starting at line_min (inclusive) within the filtered stream."""
-        nonlocal rows, top_line
-        rows = view.window_after(base, line_min_inclusive=line_min, window=page_size())
-        top_line = rows[0].line if rows else None
-
-    def jump_end() -> None:
-        nonlocal rows, top_line
-        rows = view.window_before(base, line_max_exclusive=end_exclusive(), window=page_size())
-        top_line = rows[0].line if rows else None
-
-    def find_first() -> int | None:
-        """Find the first matching line in the filtered stream."""
-        opts = QueryOptions(**vars(base))
-        opts.order_by = "line"
-        opts.desc = False
-        opts.limit = 1
-        if opts.line_from is None:
-            opts.line_from = 0
-        res = view.query(opts)
-        return res[0].line if res else None
-
-    def find_prev(before_line: int) -> int | None:
-        """Find previous matching line strictly < before_line, respecting base bounds."""
-        opts = QueryOptions(**vars(base))
-        opts.order_by = "line"
-        opts.desc = True
-        opts.limit = 1
-        opts.line_to = min(before_line - 1, base.line_to) if base.line_to is not None else (before_line - 1)
-        opts.line_from = base.line_from
-        res = view.query(opts)
-        return res[0].line if res else None
-
-    def find_next(after_line: int) -> int | None:
-        """Find next matching line strictly > after_line, respecting base bounds."""
-        opts = QueryOptions(**vars(base))
-        opts.order_by = "line"
-        opts.desc = False
-        opts.limit = 1
-        opts.line_from = max(after_line + 1, base.line_from) if base.line_from is not None else (after_line + 1)
-        opts.line_to = base.line_to
-        res = view.query(opts)
-        return res[0].line if res else None
-
-    # Initial view: last page within the filtered range.
-    jump_end()
-    render()
-
-    control = FormattedTextControl(text=lambda: FormattedText(fragments), focusable=False, show_cursor=False)
-    window = Window(
-        content=control,
-        wrap_lines=False,
-        right_margins=[ScrollbarMargin(display_arrows=True)],
-        always_hide_cursor=True,
-    )
-
-    style = Style.from_dict(PT_STYLE)
-
-    @kb.add("q")
-    def _(event) -> None:
-        event.app.exit()
-
-    @kb.add("up")
-    @kb.add("k")
-    def _(event) -> None:
-        nonlocal top_line
-        if top_line is None:
-            return
-        prev_line = find_prev(top_line)
-        if prev_line is None:
-            return
-        load_from(prev_line)
-        render()
-
-    @kb.add("down")
-    @kb.add("j")
-    def _(event) -> None:
-        nonlocal top_line
-        if top_line is None:
-            return
-        nxt_line = find_next(top_line)
-        if nxt_line is None:
-            return
-        load_from(nxt_line)
-        render()
-
-    @kb.add("pageup")
-    def _(event) -> None:
-        nonlocal top_line
-        if top_line is None:
-            return
-        rs = view.window_before(base, line_max_exclusive=top_line, window=page_size())
-        if not rs:
-            return
-        top_line = rs[0].line
-        load_from(top_line)
-        render()
-
-    @kb.add("pagedown")
-    def _(event) -> None:
-        nonlocal top_line
-        if not rows:
-            return
-        last = rows[-1].line
-        rs = view.window_after(base, line_min_inclusive=last + 1, window=page_size())
-        if not rs:
-            jump_end()
-            render()
-            return
-        top_line = rs[0].line
-        load_from(top_line)
-        render()
-
-    @kb.add("g")
-    def _(event) -> None:
-        first = base.line_from if base.line_from is not None else find_first()
-        if first is None:
-            return
-        load_from(first)
-        render()
-
-    @kb.add("G")
-    def _(event) -> None:
-        jump_end()
-        render()
-
-    app = Application(layout=Layout(window), key_bindings=kb, full_screen=True, style=style)
-    app.run()
-    return 0
-
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.widgets import TextArea
 
 
 def cmd_log_tui(args: argparse.Namespace) -> int:
-    """
-    Textual TUI for browsing logs (archives + query builder + details).
-
-    CLI flags are used as *initial overrides* on top of the persisted TUI config.
-    """
+    """Launch the Textual log TUI (archives + filters + details)."""
+    from ipi_ecs.logging.viewer import QueryOptions
     from ipi_ecs.cli.logging.tui_app import run_tui
 
     opts = QueryOptions(
@@ -435,17 +121,23 @@ def cmd_log_tui(args: argparse.Namespace) -> int:
         since=args.since,
         until=args.until,
         l_type=args.l_type,
-        exclude_types=_default_exclude_types(args),
         level=args.level,
         min_level=args.min_level,
+        exclude_types=args.exclude_types if getattr(args, "exclude_types", None) else None,
     )
+
+    # Default exclude REC unless user explicitly included REC or set excludes or type
+    if (opts.exclude_types is None) and (opts.l_type is None) and (not getattr(args, "include_rec", False)):
+        opts.exclude_types = ["REC"]
+    elif getattr(args, "include_rec", False) and opts.exclude_types:
+        opts.exclude_types = [x for x in opts.exclude_types if x != "REC"]
 
     return int(
         run_tui(
             log_dir=args.log_dir,
             env_var=ENV_LOG_DIR,
-            initial_opts=opts,
-            initial_archive=getattr(args, "archive", None),
+            archive=getattr(args, "archive", None),
+            opts=opts,
             poll=getattr(args, "poll", 1.0),
             follow=not getattr(args, "no_follow", False),
             show_uuids=getattr(args, "show_uuids", False),
@@ -454,36 +146,77 @@ def cmd_log_tui(args: argparse.Namespace) -> int:
         or 0
     )
 
+    d = resolve_log_dir(args.log_dir, ENV_LOG_DIR)
 
+    r = JournalReader(d)
+    pos = max(0, r.next_line - args.window)
 
-def cmd_log_archive(args: argparse.Namespace) -> int:
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    info = viewer.archive_current(args.name)
-    print(f"Archived to: {info.name}")
-    print(f"Range: [{info.start_line}, {info.end_line_exclusive})")
-    return 0
+    kb = KeyBindings()
+    area = TextArea(text="", read_only=True, scrollbar=True)
 
-def cmd_log_archives(args: argparse.Namespace) -> int:
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    items = viewer.list_archives(since=args.since, until=args.until)
-    if not items:
-        print("(no archives)")
-        return 0
+    def refresh_view() -> None:
+        nonlocal pos
+        recs = r.read_between(pos, pos + args.window)
+        area.text = "\n".join(fmt(x) for x in recs) if recs else "(no data)"
 
-    print(f"{'ARCHIVE':<20} {'LINES':<24} {'START':<23} {'END':<23}")
-    for a in items:
-        line_range = f"{a.start_line}-{max(a.start_line, a.end_line_exclusive-1)}"
-        print(f"{a.name:<20} {line_range:<24} {fmt_ns_local(a.start_ts_ns):<23} {fmt_ns_local(a.end_ts_ns):<23}")
+    @kb.add("q")
+    def _(event) -> None:
+        event.app.exit()
 
-    return 0
+    @kb.add("down")
+    @kb.add("j")
+    def _(event) -> None:
+        nonlocal pos
+        pos += args.step
+        refresh_view()
 
-def cmd_log_locate(args: argparse.Namespace) -> int:
-    viewer = LogViewer(args.log_dir, env_var=ENV_LOG_DIR)
-    info = viewer.locate_line(int(args.line))
-    if info is None:
-        print("(not found)")
-        return 1
-    print(f"{args.line} is in archive '{info.name}' ({info.path})  range=[{info.start_line}, {info.end_line_exclusive})")
+    @kb.add("up")
+    @kb.add("k")
+    def _(event) -> None:
+        nonlocal pos
+        pos = max(0, pos - args.step)
+        refresh_view()
+
+    @kb.add("g")
+    def _(event) -> None:
+        nonlocal pos
+        pos = 0
+        refresh_view()
+
+    @kb.add("G")
+    def _(event) -> None:
+        nonlocal pos
+        r.refresh()
+        pos = max(0, r.next_line - args.window)
+        refresh_view()
+
+    refresh_view()
+    app = Application(layout=Layout(area), key_bindings=kb, full_screen=True)
+
+    if args.follow:
+        # crude follow loop integrated via prompt_toolkit's invalidate mechanism
+        def follow_tick() -> None:
+            nonlocal pos
+            r.refresh()
+            end = r.next_line
+            new_pos = max(0, end - args.window)
+            if new_pos != pos:
+                pos = new_pos
+                refresh_view()
+            app.invalidate()
+
+        # background polling
+        import threading
+
+        def bg():
+            while True:
+                time.sleep(args.poll)
+                follow_tick()
+
+        t = threading.Thread(target=bg, daemon=True)
+        t.start()
+
+    app.run()
     return 0
 
 def cmd_server(args: argparse.Namespace) -> int:
@@ -503,60 +236,6 @@ def cmd_server(args: argparse.Namespace) -> int:
     return 0
 
 
-# ----------------------------
-# Argparse helpers
-# ----------------------------
-def add_archive_arg(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--archive",
-        default=None,
-        help="Archive name under <log_root>/archives (or 'current'). Defaults to current.",
-    )
-
-
-def add_log_dir_arg(p: argparse.ArgumentParser, *, help_text: str = "Log directory (default: env var / platform default).") -> None:
-    # positional OR optional, same dest; optional overrides if provided
-    #p.add_argument("log_dir", nargs="?", type=Path, default=None)
-    p.add_argument("--log_dir", dest="log_dir", type=Path, default=None, help=help_text)
-
-
-def add_log_filters(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--uuid", default=None, help="Filter by originator UUID.")
-
-    # line filters (inclusive in CLI)
-    p.add_argument("--from", dest="line_from", type=int, default=None, help="Inclusive start global line number.")
-    p.add_argument("--to", dest="line_to", type=int, default=None, help="Inclusive end global line number.")
-
-    # time filters (human strings, assume local if no tz in string)
-    p.add_argument("--since", default=None, help="Start time (assume local if no timezone).")
-    p.add_argument("--until", default=None, help="End time (assume local if no timezone).")
-
-    # type/level filters
-    p.add_argument("--type", dest="l_type", default=None, help="Filter by l_type (e.g. EXP, SOFTW).")
-    p.add_argument("--exclude-type", dest="exclude_types", action="append", default=[], help="Exclude an l_type (repeatable).")
-    p.add_argument("--include-rec", action="store_true", help="Include REC in default views (overrides default exclusion).")
-    p.add_argument("--level", default=None, help="Filter by exact level string.")
-    p.add_argument("--min-level", default=None, help="Filter by minimum level (requires --type).")
-
-    p.add_argument("--show-uuids", dest="show_uuids", action="store_true", help="Always show UUIDs even if subsystem is known")
-    p.add_argument("--hide-uuids", dest="never_show_uuids", action="store_true", help="Never show UUIDs even if subsystem is not known")
-
-
-
-def add_color_arg(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--color", choices=["auto", "always", "never"], default="auto",
-                   help="Colorize output for show/query/follow (requires rich; auto only colors on TTY).")
-
-
-def add_log_sorting(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--order-by", default="line", choices=["line", "origin_ts_ns", "ingest_ts_ns", "level_num"])
-    p.add_argument("--desc", action="store_true")
-    p.add_argument("--limit", type=int, default=None)
-
-
-# ----------------------------
-# Argparse
-# ----------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ipi-ecs")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -565,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("logger", help="Run the log ingestion server.")
     pl.add_argument("--host", default="0.0.0.0")
     pl.add_argument("--port", type=int, default=None)
-    pl.add_argument("--log-dir", "--log_dir", dest="log_dir", type=Path, default=None)
+    pl.add_argument("--log-dir", type=Path, default=None)
     pl.add_argument("--rotate-max-mb", type=int, default=256)
     pl.set_defaults(fn=cmd_logger)
 
@@ -573,66 +252,53 @@ def build_parser() -> argparse.ArgumentParser:
     p_log = sub.add_parser("log", help="Log viewing tools.")
     sub_log = p_log.add_subparsers(dest="logcmd", required=True)
 
-    ps = sub_log.add_parser("show", help="Print logs in [start, end) global line range.")
-    add_log_dir_arg(ps)
-    add_color_arg(ps)
+    ps = sub_log.add_parser("show", help="Print a range of global line numbers.")
+    ps.add_argument("--log_dir", type=Path, default=None)
     ps.add_argument("--start", type=int, required=True)
     ps.add_argument("--end", type=int, required=True)
-    ps.add_argument("--show-uuids", dest="show_uuids", action="store_true", help="Always show UUIDs")
-    ps.add_argument("--hide-uuids", dest="never_show_uuids", action="store_true", help="Never show UUIDs")
     ps.set_defaults(fn=cmd_log_show)
 
-    pq = sub_log.add_parser("query", help="Query logs using the SQLite index.")
-    add_archive_arg(pq)
-    add_log_dir_arg(pq)
-    add_color_arg(pq)
-    add_log_filters(pq)
-    add_log_sorting(pq)
-    pq.set_defaults(fn=cmd_log_query)
-
     pf = sub_log.add_parser("follow", help="Live stream logs (tail -F across rollovers).")
-    add_archive_arg(pf)
-    add_log_dir_arg(pf)
-    add_color_arg(pf)
-    add_log_filters(pf)
-    pf.add_argument("--tail", type=int, default=200, help="If --from not set, start from last N lines.")
+    pf.add_argument("--log_dir", type=Path, default=None)
+    pf.add_argument("--start", type=int, default=None, help="Start global line (default: tail from end).")
+    pf.add_argument("--tail", type=int, default=200, help="If --start not set, start from last N lines.")
     pf.add_argument("--batch", type=int, default=200)
     pf.add_argument("--poll", type=float, default=0.25)
     pf.set_defaults(fn=cmd_log_follow)
 
-    pb = sub_log.add_parser("browse", help="Interactive browser (less-like) using prompt_toolkit.")
-    add_archive_arg(pb)
-    add_log_dir_arg(pb)
-    add_log_filters(pb)
-    pb.add_argument("--window", type=int, default=200)
+    pb = sub_log.add_parser("browse", help="Interactive browser (less-like).")
+    pb.add_argument("--log_dir", type=Path, default=None)
+    pb.add_argument("--window", type=int, default=10)
+    pb.add_argument("--step", type=int, default=1)
     pb.add_argument("--poll", type=float, default=0.25)
     pb.add_argument("--follow", action="store_true", help="Auto-jump to the end as logs arrive.")
     pb.set_defaults(fn=cmd_log_browse)
 
+    pt = sub_log.add_parser("tui", help="Textual TUI (archives + query builder).")
+    pt.add_argument("--log_dir", type=Path, default=None)
+    pt.add_argument("--archive", default=None, help="Archive name (default: persisted config / current).")
 
-    pt = sub_log.add_parser("tui", help="Interactive TUI (Textual) for archives + query building + details.")
-    add_log_dir_arg(pt)
-    add_archive_arg(pt)
-    add_log_filters(pt)
-    pt.add_argument("--poll", type=float, default=1.0, help="Polling interval (seconds) for auto-follow at end.")
-    pt.add_argument("--no-follow", dest="no_follow", action="store_true", help="Disable auto-follow when at end.")
+    pt.add_argument("--uuid", default=None, help="Filter by originator UUID.")
+    pt.add_argument("--from", dest="line_from", type=int, default=None, help="Inclusive start global line.")
+    pt.add_argument("--to", dest="line_to", type=int, default=None, help="Inclusive end global line.")
+    pt.add_argument("--since", default=None, help="Start time (local if no timezone).")
+    pt.add_argument("--until", default=None, help="End time (local if no timezone).")
+    pt.add_argument("--type", dest="l_type", default=None, help="Filter by l_type (e.g. EXP, SOFTW).")
+    pt.add_argument("--level", default=None, help="Filter by exact level string.")
+    pt.add_argument("--min-level", default=None, help="Filter by minimum level (requires --type ordering rules in your viewer).")
+
+    pt.add_argument("--exclude-type", dest="exclude_types", action="append", default=None,
+                    help="Exclude an l_type (repeatable). Default excludes REC unless overridden.")
+    pt.add_argument("--include-rec", action="store_true", help="Do not exclude REC by default.")
+
+    pt.add_argument("--poll", type=float, default=1.0, help="Auto-follow polling interval in seconds.")
+    pt.add_argument("--no-follow", dest="no_follow", action="store_true", help="Disable auto-follow at tail.")
+
+    # UUID display toggles (match other commands, if present)
+    pt.add_argument("--show-uuids", dest="show_uuids", action="store_true", help="Always show UUIDs.")
+    pt.add_argument("--hide-uuids", dest="never_show_uuids", action="store_true", help="Never show UUIDs.")
+
     pt.set_defaults(fn=cmd_log_tui)
-
-    pa = sub_log.add_parser("archive", help="Move current/ into archives/ and start a new empty current/.")
-    add_log_dir_arg(pa, help_text="Log root directory (default: env var / platform default).")
-    pa.add_argument("--name", default=None, help="Archive name (default: YYYY-MM-DD_NNN).")
-    pa.set_defaults(fn=cmd_log_archive)
-
-    pls = sub_log.add_parser("archives", help="List available archives under log_root/archives.")
-    add_log_dir_arg(pls, help_text="Log root directory (default: env var / platform default).")
-    pls.add_argument("--since", default=None, help="Only show archives overlapping start time (human string).")
-    pls.add_argument("--until", default=None, help="Only show archives overlapping end time (human string).")
-    pls.set_defaults(fn=cmd_log_archives)
-
-    ploc = sub_log.add_parser("locate", help="Find which archive contains a given global line number.")
-    add_log_dir_arg(ploc, help_text="Log root directory (default: env var / platform default).")
-    ploc.add_argument("--line", type=int, required=True)
-    ploc.set_defaults(fn=cmd_log_locate)
 
     # server
     ps = sub.add_parser("server", help="Run the ECS DDS server.")
@@ -640,13 +306,41 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--port", type=int, default=None)
     ps.set_defaults(fn=cmd_server)
 
-    # echo
     pe = sub.add_parser("echo", help="Echo a DDS key from a subsystem.")
     pe.add_argument("--sys", type=str)
     pe.add_argument("--hz", type=float, default=None)
     pe.add_argument("name", nargs='?', type=str, default=None)
     pe.add_argument("key", type=str)
     pe.set_defaults(fn=echo.main)
+
+    pq = sub_log.add_parser("query", help="Query logs using the SQLite index.")
+    pq.add_argument("log_dir", type=Path)
+
+    pq.add_argument("--uuid", default=None, help="Filter by originator UUID.")
+
+    # line filters (inclusive)
+    pq.add_argument("--from", dest="line_from", type=int, default=None,
+                help="Inclusive start global line number.")
+    pq.add_argument("--to", dest="line_to", type=int, default=None,
+                help="Inclusive end global line number.")
+
+    # time filters (human strings, assume local if no tz in string)
+    pq.add_argument("--since", default=None, help="Start time (local if no timezone).")
+    pq.add_argument("--until", default=None, help="End time (local if no timezone).")
+
+    # type/level filters
+    pq.add_argument("--type", dest="l_type", default=None, help="Filter by l_type (e.g. EXP, SOFTW).")
+    pq.add_argument("--level", default=None, help="Filter by exact level string.")
+    pq.add_argument("--min-level", default=None,
+                help="Filter by minimum level (requires --type).")
+
+    # sorting / limiting
+    pq.add_argument("--order-by", default="line",
+                choices=["line", "origin_ts_ns", "ingest_ts_ns", "level_num"])
+    pq.add_argument("--desc", action="store_true")
+    pq.add_argument("--limit", type=int, default=None)
+
+    pq.set_defaults(fn=log_query.cmd_log_query)
 
     return p
 

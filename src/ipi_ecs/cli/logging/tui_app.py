@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 from rich.pretty import Pretty
 from rich.text import Text
 
-# Backend (archives + query API)
 from ipi_ecs.logging.viewer import (
     LogViewer,
     QueryOptions,
@@ -20,14 +19,37 @@ from ipi_ecs.logging.timefmt import fmt_ns_local
 
 
 # Config persistence
-from ipi_ecs.cli.logging.config import load_state, save_state
+# Prefer CLI-local config module (ipi_ecs/cli/logging/config.py).
+# Fall back to a local implementation if unavailable.
+try:
+    from ipi_ecs.cli.logging.config import load_state, save_state  # type: ignore
+except Exception:  # pragma: no cover
+    import json
+    from platformdirs import user_config_dir
 
+    APP_NAME = "ipi-ecs"
+    CONFIG_FILE = "log_tui.json"
+
+    def _cfg_path() -> Path:
+        p = Path(user_config_dir(APP_NAME)) / CONFIG_FILE
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def load_state() -> dict[str, Any]:
+        p = _cfg_path()
+        if not p.exists():
+            return {}
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def save_state(*, archive: str, opts: QueryOptions) -> None:
+        p = _cfg_path()
+        p.write_text(
+            json.dumps({"archive": archive, "filters": asdict(opts)}, indent=2),
+            encoding="utf-8",
+        )
 
 
 def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> Text:
-    """
-    Produce a Rich Text line using the shared palette (RICH_STYLE from viewer.py).
-    """
     rec = ln.record
     origin = rec.get("origin", {}) or {}
     ts_ns = origin.get("ts_ns")
@@ -54,7 +76,7 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> Text:
     # Subsystem label
     t.append(f"{subsystem}: ", style=RICH_STYLE.get("info", "") or "cyan")
 
-    # Message (highlight warnings/errors; other types default)
+    # Message (highlight warnings/errors)
     t.append(msg, style=sev_style if token in {"error", "warn"} else "")
 
     return t
@@ -67,23 +89,22 @@ def _highlight_line(line: Text) -> Text:
 
 
 def run_tui(
-    log_dir: Optional[Path],
     *,
-    env_var: str = "IPI_ECS_LOG_DIR",
-    initial_opts: QueryOptions | None = None,
-    initial_archive: str | None = None,
+    log_dir: Optional[Path],
+    env_var: str,
+    archive: str | None,
+    opts: QueryOptions,
     poll: float = 1.0,
     follow: bool = True,
     show_uuids: bool = False,
     hide_uuids: bool = False,
 ) -> int:
     """
-    Entry point called by main CLI:
-      ipi-ecs log tui
+    Textual TUI for logs.
 
-    - Persists archive + filters in a config file.
-    - CLI args can override persisted config via initial_opts / initial_archive.
-    - If follow=True, auto-refreshes when you're at the end (tail) and new lines arrive.
+    - Uses custom viewport rendering (no ListView scrolling) for smooth navigation.
+    - If follow=True, auto-refreshes when you're at the tail and new matching lines arrive.
+    - `opts` and `archive` are initial overrides on top of persisted config.
     """
     try:
         from textual.app import App, ComposeResult
@@ -96,24 +117,32 @@ def run_tui(
         print("Textual is not installed. Install it with: pip install textual")
         return 1
 
+    viewer = LogViewer(log_dir, env_var=env_var)
+
     class DetailScreen(ModalScreen[None]):
         BINDINGS = [
             Binding("escape", "close", "Close", show=False),
             Binding("q", "close", "Close", show=False),
         ]
 
-        def __init__(self, ln) -> None:
+        def __init__(self, ln, *, on_filter_uuid: Callable[[str], None] | None = None) -> None:
             super().__init__()
             self.ln = ln
+            self._on_filter_uuid = on_filter_uuid
+            origin = (ln.record.get("origin") or {})
+            self._uuid = origin.get("uuid") if isinstance(origin.get("uuid"), str) else None
 
         def compose(self) -> ComposeResult:
             yield Vertical(
-                Static(f"Line {self.ln.line}", id="detail_title"),
+                Static(f"Line {self.ln.line}  UUID={self._uuid or '-'}", id="detail_title"),
                 VerticalScroll(
                     Static(Pretty(self.ln.record, expand_all=False), id="detail_body"),
                     id="detail_scroll",
                 ),
-                Button("Close", id="close"),
+                Horizontal(
+                    Button("Filter UUID", id="filter_uuid"),
+                    Button("Close", id="close"),
+                ),
                 id="detail_modal",
             )
 
@@ -122,6 +151,14 @@ def run_tui(
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "close":
+                self.dismiss(None)
+                return
+            if event.button.id == "filter_uuid":
+                if callable(self._on_filter_uuid) and self._uuid:
+                    try:
+                        self._on_filter_uuid(self._uuid)
+                    except Exception:
+                        pass
                 self.dismiss(None)
 
     class FilterScreen(ModalScreen[QueryOptions]):
@@ -210,7 +247,6 @@ def run_tui(
                 }
             )
 
-            # Default: hide REC unless user explicitly changed excludes or set a type.
             if nxt.exclude_types is None and nxt.l_type is None:
                 nxt.exclude_types = ["REC"]
 
@@ -255,7 +291,7 @@ def run_tui(
                 out.append("\n")
             return out
 
-        # (You added set_id; keeping it for compatibility with older Textual)
+        # Compatibility helper (some older code uses set_id)
         def set_id(self, id):
             self._id = id
             return self
@@ -264,9 +300,10 @@ def run_tui(
         TITLE = "ipi-ecs log tui"
 
         CSS = """
-        #topbar { height: 1; }
+        #topbar { height: 1; padding: 0 1; }
         #main { height: 1fr; }
         #archives_wrap { width: 34; border: round $accent; }
+        #archives_title { height: 1; padding: 0 1; }
         #log_wrap { border: round $primary; height: 1fr; }
         #filter_modal, #detail_modal { border: round $accent; padding: 1; height: 95%; width: 95%; }
         #filter_scroll, #detail_scroll { height: 1fr; }
@@ -278,6 +315,10 @@ def run_tui(
             Binding("a", "toggle_archives", "Archives", priority=True),
             Binding("/", "filters", "Query", priority=True),
             Binding("enter", "details", "Details", priority=True),
+
+            Binding("f", "toggle_follow", "Follow", priority=True),
+            Binding("u", "filter_uuid", "Filter UUID", priority=True),
+            Binding("U", "clear_uuid", "Clear UUID", priority=True),
 
             Binding("j", "down", "Down", priority=True),
             Binding("k", "up", "Up", priority=True),
@@ -293,46 +334,45 @@ def run_tui(
 
         def __init__(self) -> None:
             super().__init__()
-            self.viewer = LogViewer(log_dir, env_var=env_var)
-            self.view = None
 
+            # persisted state
             st = load_state() or {}
-            self.archive = st.get("archive") or "current"
+            persisted_archive = st.get("archive") or "current"
             filt = st.get("filters") or {}
             try:
-                self.opts = QueryOptions(**filt)
+                persisted_opts = QueryOptions(**filt)
             except Exception:
-                self.opts = QueryOptions()
+                persisted_opts = QueryOptions()
 
-            # Apply CLI overrides on top of persisted config
-            if initial_archive:
-                self.archive = initial_archive
+            # initial overrides from CLI
+            self.archive = archive or persisted_archive
+            self.opts = persisted_opts
 
-            if initial_opts is not None:
-                for k, v in asdict(initial_opts).items():
-                    # Only override fields that CLI actually set (None means "not specified")
-                    if v is None:
-                        continue
-                    # Don't override with empty strings
-                    if isinstance(v, str) and v.strip() == "":
-                        continue
-                    setattr(self.opts, k, v)
+            # Override only fields that CLI set (non-None, non-empty)
+            for k, v in asdict(opts).items():
+                if v is None:
+                    continue
+                if isinstance(v, str) and v.strip() == "":
+                    continue
+                if isinstance(v, list) and len(v) == 0:
+                    continue
+                setattr(self.opts, k, v)
 
             if self.opts.exclude_types is None and self.opts.l_type is None:
                 self.opts.exclude_types = ["REC"]
 
+            self.show_uuids = bool(show_uuids)
+            self.hide_uuids = bool(hide_uuids)
+
+            self.view = None
             self.rows = []
             self.cursor = 0
             self._last_page_size = None
 
-            # Tail / follow state
+            # tail/follow state
             self._at_end_view = True
             self._follow_enabled = bool(follow)
             self._poll = float(poll) if poll and poll > 0 else 1.0
-
-            # UUID display behavior for TUI
-            self.show_uuids = bool(show_uuids)
-            self.hide_uuids = bool(hide_uuids)
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -352,14 +392,13 @@ def run_tui(
             # Wait for layout so we know viewport height
             self.call_after_refresh(self._jump_end_and_render)
 
-            # Focus log so j/k works immediately
             try:
                 self.query_one("#log", LogPane).focus()
             except Exception:
                 pass
 
             # Auto-follow polling
-            if self._follow_enabled:
+            if self._poll > 0:
                 try:
                     self.set_interval(self._poll, self._poll_new_lines)
                 except Exception:
@@ -373,11 +412,31 @@ def run_tui(
                 return 20
             return max(5, h)
 
+        def _end_exclusive(self) -> int:
+            end = self.view.next_line()
+            if self.opts.line_to is not None:
+                end = min(end, self.opts.line_to + 1)
+            return end
+
+        def _tail_selected(self) -> bool:
+            try:
+                if not self.rows:
+                    return True
+                return (self.rows[-1].line == (self._end_exclusive() - 1)) and (self.cursor == len(self.rows) - 1)
+            except Exception:
+                return False
+
         def _set_topbar(self) -> None:
             ex = ",".join(self.opts.exclude_types or [])
+            flags = []
+            flags.append("FOLLOW" if self._follow_enabled else "NOFOLLOW")
+            if self._tail_selected():
+                flags.append("TAIL")
+
+            uuid_flag = self.opts.uuid if self.opts.uuid else "-"
             self.query_one("#topbar", Static).update(
-                f"archive={self.archive}   exclude=[{ex}]   type={self.opts.l_type} uuid={self.opts.uuid} "
-                f"level={self.opts.level} min={self.opts.min_level}   follow={'on' if self._follow_enabled else 'off'}"
+                f"archive={self.archive}  [{' '.join(flags)}]  uuid={uuid_flag}  type={self.opts.l_type or '-'}  "
+                f"level={self.opts.level or '-'}  min={self.opts.min_level or '-'}  exclude=[{ex}]"
             )
 
         def _load_archives(self) -> None:
@@ -385,10 +444,9 @@ def run_tui(
             lv.clear()
             lv.append(ListItem(Static("current"), id="archive_current"))
             try:
-                for a in self.viewer.list_archives():
+                for a in viewer.list_archives():
                     lv.append(ListItem(Static(a.name), id=f"archive_{a.name}"))
             except Exception:
-                # direct-archive mode: hide archives panel
                 self.query_one("#archives_wrap").display = False
 
         # ----- Data access -----
@@ -399,14 +457,8 @@ def run_tui(
                 except Exception:
                     pass
             self.archive = name
-            self.view = self.viewer.open_archive(name)
+            self.view = viewer.open_archive(name)
             save_state(archive=self.archive, opts=self.opts)
-
-        def _end_exclusive(self) -> int:
-            end = self.view.next_line()
-            if self.opts.line_to is not None:
-                end = min(end, self.opts.line_to + 1)
-            return end
 
         def _jump_end_and_render(self) -> None:
             self._jump_end()
@@ -429,7 +481,6 @@ def run_tui(
             n = self._page_size()
             if self._last_page_size != n:
                 self._last_page_size = n
-                # reload tail to match new size
                 self._jump_end()
 
         # ----- Rendering -----
@@ -445,21 +496,15 @@ def run_tui(
 
         def _poll_new_lines(self) -> None:
             """
-            Periodic poll: if we're currently at the tail (end view and cursor at last row),
-            refresh the tail window when new matching lines arrive.
+            If you're at the tail (cursor on last visible line of the permitted range),
+            refresh tail when new matching lines arrive.
             """
             if not self._follow_enabled or self.view is None:
                 return
-            if not self._at_end_view:
+            if not self._tail_selected():
                 return
-            if not self.rows:
-                self._jump_end()
-                self._render()
-                return
-            if self.cursor != len(self.rows) - 1:
-                return  # only auto-follow when selection is on the last visible line
 
-            last_line = self.rows[-1].line
+            last_line = self.rows[-1].line if self.rows else -1
             n = self._page_size()
             new_rows = self.view.window_before(self.opts, line_max_exclusive=self._end_exclusive(), window=n)
             if not new_rows:
@@ -475,6 +520,33 @@ def run_tui(
             panel = self.query_one("#archives_wrap")
             panel.display = not panel.display
 
+        def action_toggle_follow(self) -> None:
+            self._follow_enabled = not self._follow_enabled
+            if self._follow_enabled:
+                self._jump_end()
+            self._render()
+
+        def _apply_uuid_filter(self, uuid: str) -> None:
+            self.opts.uuid = uuid
+            save_state(archive=self.archive, opts=self.opts)
+            self._jump_end()
+            self._render()
+
+        def action_filter_uuid(self) -> None:
+            if not self.rows:
+                return
+            rec = self.rows[self.cursor].record
+            origin = rec.get("origin", {}) or {}
+            uuid = origin.get("uuid")
+            if isinstance(uuid, str) and uuid.strip():
+                self._apply_uuid_filter(uuid)
+
+        def action_clear_uuid(self) -> None:
+            self.opts.uuid = None
+            save_state(archive=self.archive, opts=self.opts)
+            self._jump_end()
+            self._render()
+
         def action_home(self) -> None:
             self._jump_home()
             self._render()
@@ -486,7 +558,6 @@ def run_tui(
         def action_up(self) -> None:
             if not self.rows:
                 return
-
             self._at_end_view = False
 
             if self.cursor > 0:
@@ -494,7 +565,6 @@ def run_tui(
                 self._render()
                 return
 
-            # At top of viewport: shift window by one matching log line backwards.
             first_line = self.rows[0].line
             prev = self.view.window_before(self.opts, line_max_exclusive=first_line, window=1)
             if not prev:
@@ -515,7 +585,6 @@ def run_tui(
             last_line = self.rows[-1].line
             nxt = self.view.window_after(self.opts, line_min_inclusive=last_line + 1, window=1)
             if not nxt:
-                # no more matching lines; we're at tail
                 self._at_end_view = True
                 return
             self._at_end_view = False
@@ -539,6 +608,7 @@ def run_tui(
         def action_page_down(self) -> None:
             if not self.rows:
                 return
+            self._at_end_view = False
             n = self._page_size()
             last_line = self.rows[-1].line
             rs = self.view.window_after(self.opts, line_min_inclusive=last_line + 1, window=n)
@@ -546,7 +616,6 @@ def run_tui(
                 self._jump_end()
                 self._render()
                 return
-            self._at_end_view = False
             self.rows = rs
             self.cursor = min(n - 1, len(self.rows) - 1)
             self._render()
@@ -555,7 +624,7 @@ def run_tui(
             if not self.rows:
                 return
             ln = self.rows[self.cursor]
-            self.push_screen(DetailScreen(ln))
+            self.push_screen(DetailScreen(ln, on_filter_uuid=self._apply_uuid_filter))
 
         def action_filters(self) -> None:
             def _cb(result: QueryOptions | None = None, *args, **kwargs) -> None:
@@ -569,11 +638,9 @@ def run_tui(
                             break
                 if ro is None:
                     return
-
                 self.opts = ro
                 if self.opts.exclude_types is None and self.opts.l_type is None:
                     self.opts.exclude_types = ["REC"]
-
                 save_state(archive=self.archive, opts=self.opts)
                 self._jump_end()
                 self._render()
@@ -581,14 +648,11 @@ def run_tui(
             self.push_screen(FilterScreen(self.opts), callback=_cb)
 
         def on_list_view_selected(self, event: ListView.Selected) -> None:
-            # Archive selection (log pane doesn't use ListView anymore)
             if not event.item or not event.item.id:
                 return
             if not event.item.id.startswith("archive_"):
                 return
             name = event.item.id.replace("archive_", "", 1)
-            if name == "current":
-                name = "current"
             self._open_archive(name)
             self._jump_end()
             self._render()
@@ -612,9 +676,15 @@ def run_tui(
                 pass
 
         def on_unmount(self) -> None:
-            save_state(archive=self.archive, opts=self.opts)
-            if self.view is not None:
-                self.view.close()
+            try:
+                save_state(archive=self.archive, opts=self.opts)
+            except Exception:
+                pass
+            try:
+                if self.view is not None:
+                    self.view.close()
+            except Exception:
+                pass
 
     LogTUI().run()
     return 0
