@@ -10,100 +10,79 @@ import ipi_ecs.dds.magics as magics
 import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 import ipi_ecs.core.mt_events as mt_events
 
+def print_transop(state, reason, value = None):
+    print(f"GET KV Op resulted in state {state}, with value {value} and reason {reason}")
+
 class EchoClient:
     def __init__(self, t_name, target__uuid, key):
-        self.__target = uuid.UUID(bytes=target__uuid) if target__uuid is not None else None
-        self.__t_name = t_name
-        self.__key = key
+        self.__target = uuid.UUID(target__uuid) if target__uuid is not None else None
+        self.__t_name = t_name.encode("utf-8") if t_name is not None else None
+        self.__key = key.encode("utf-8")
         self.__run = True
 
         self.__remote_kv = None
-        self.__type = None
 
         self.__nd_event = mt_events.Event()
 
-        print("Registering subsystem...")
+        #print("Registering subsystem...")
         self.__client = client.DDSClient(uuid.uuid4())
         self.__client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid4(), "__cli")).then(self.__on_got_subsystem)
 
-        self.__subsystem = None
-
-    def __on_got_subsystem(self, handle: client.SubsystemHandle):
-        print("Registered:", handle.get_info().get_name())
-        self.__subsystem = handle
-        #remote_kv.set_type(types.IntegerTypeSpecifier())
+    def __on_got_subsystem(self, handle: client.RegisteredSubsystemHandle):
+        def __setup_kv(uuid):
+            handle.get_subsystem(uuid).then(lambda subsystem: subsystem.get_kv(self.__key).then(self.__on_got_kv))
 
         if self.__target is not None:
-            self.__subsystem.get_kv_desc(self.__target, self.__key).then(self.__on_got_descriptor)
+            __setup_kv(self.__target)
         else:
-            self.__client.resolve(self.__t_name).then(self.__on_got_resolve)
+            self.__client.resolve(self.__t_name).then(__setup_kv)
 
-    def __on_got_resolve(self, state, reason, value = None):
-        if value is None:
-            print("Could not resolve name due to: ", reason)
-            self.__run = False
-            return
-        
-        if len(value) <= 1:
-            print("Could not resolve name.")
-            self.__run = False
-            return
-
-        
-        self.__target = uuid.UUID(bytes=value)
-        print("Got UUID:", self.__target)
-
-        self.__subsystem.get_kv_desc(self.__target, self.__key).then(self.__on_got_descriptor)
-
-    def __on_got_descriptor(self, state, reason, value = None):
-        if self.__type is not None:
-            return
-        
-        if value is None:
-            print("Could not get descriptor due to: ", reason)
-            self.__run = False
-            return
-        
-        desc, key, is_cached = segmented_bytearray.decode(value)
-        self.__type = types.decode(desc)
-        assert key == self.__key
-        self.__is_cached = bool.from_bytes(is_cached, byteorder="big")
-
-        self.__remote_kv = self.__subsystem.add_remote_kv(self.__key, self.__target, self.__is_cached)
-        self.__remote_kv.set_type(self.__type)
-        self.__remote_kv.on_new_data_received(self.__on_rcv_new_data)
+    def __on_got_kv(self, value):
+        self.__remote_kv = value
+        self.__remote_kv.on_new_data_received(lambda v: self.__nd_event.call())
 
     def get_value(self):
-        if self.__remote_kv is None:
-            return None
-        
-        return self.__remote_kv.value
+        return self.__remote_kv.value if self.__remote_kv is not None else None
     
     def ok(self):
         return self.__run and self.__client.ok()
     
-    def __on_rcv_new_data(self, v):
-        self.__nd_event.call()
-
     def on_new_data(self, c : mt_events.EventConsumer, event):
         self.__nd_event.bind(c, event)
 
     def close(self):
         self.__client.close()
+
         self.__run = False
 
+    def is_cached(self):
+        return self.__remote_kv.is_cached() if self.__remote_kv is not None else True
+
 def main(args: argparse.Namespace):
-    m_client = EchoClient(args.name.encode("utf-8"), args.sys, args.key.encode("utf-8"))
+    m_client = EchoClient(args.name, args.sys, args.key)
 
     m_awaiter = mt_events.EventConsumer()
     m_client.on_new_data(m_awaiter, 0)
+    hz = args.hz if args.hz is not None else None
 
     try:
         while m_client.ok():
-            e = m_awaiter.get(timeout=0.1)
-            if e == 0:
+            if m_client.is_cached():
+                if hz is not None and m_client.get_value() is not None:
+                    print("--hz set, but property is cached. Values will be displayed whenever the originator sends them regardless of desired rate.")
+                    hz = None
+
+                e = m_awaiter.get(timeout=0.1)
+                if e == 0:
+                    print(m_client.get_value())
+            else:
+                if hz is None:
+                    hz = 1
                 print(m_client.get_value())
+                time.sleep(1 / hz)
     except KeyboardInterrupt:
+        pass
+    finally:
         m_client.close()
 
     return 0

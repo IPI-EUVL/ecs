@@ -22,7 +22,7 @@ def print_set_kvs(state, reason, value = None):
     print(f"SET KV Op resulted in state {state}, with value {value} and reason {reason}")
 remote_kv = None
 
-def setup_subsystem(handle: client.SubsystemHandle):
+def setup_subsystem(handle: client.RegisteredSubsystemHandle):
     global remote_kv
 
     print("Registered:", handle.get_info().get_name())

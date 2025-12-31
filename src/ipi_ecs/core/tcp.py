@@ -192,11 +192,11 @@ class TCPSocket:
             if data == bytes([0x00]):
                 continue
             if data == CLOSE_R:
-                print("Received shutdown request")
+                #print("Received shutdown request")
                 self._shutdown()
                 continue
             if unescape_bytes(data) == CLOSE:
-                print("Received shutdown request")
+                #print("Received shutdown request")
                 self._shutdown()
                 continue
 
@@ -249,11 +249,14 @@ class TCPSocket:
         Stop all threads
         """
 
-        print("Closing socket.")
+        #print("Closing socket.")
         self.__daemon.stop()
 
         if self._socket is not None:
             self._socket.close()
+
+        self.__connected = False
+        self._closed_event.call()
 
     def put(self, data) -> None:
         """
@@ -336,7 +339,6 @@ class TCPSocket:
         """
         Returns if this connection has been closed
         """
-
         return not self.__valid()
     
     def connected(self):
@@ -398,7 +400,7 @@ class TCPClientSocket(TCPSocket):
             self._socket.connect(self._remote)
 
             super()._reconnect()
-            print(f"Client has connected to {self._remote}")
+            #print(f"Client has connected to {self._remote}")
         except ConnectionRefusedError:
             pass
 
@@ -406,10 +408,10 @@ class TCPClientSocket(TCPSocket):
         self._remote = remote
 
     def _closed(self):
-        if not self.is_shutdown() and not self.__p_shutdown:
+        """if not self.is_shutdown() and not self.__p_shutdown:
             print(f"Client has disconnected from {self._remote}")
         else:
-            print(f"Connection to {self._remote} has shut down gracefully.")
+            print(f"Connection to {self._remote} has shut down gracefully.")"""
 
         if (not self.is_shutdown()) or self.__keep_alive:
             self._disconnected()
@@ -469,7 +471,7 @@ class TCPServer:
         self.__daemon.add(self.__cleanup_thread)
 
     def start(self):
-        print(f"Binding to {self.__bind_addr}")
+        #print(f"Binding to {self.__bind_addr}")
         self.__socket.bind(self.__bind_addr)
         self.__socket.listen()
         self.__daemon.start()
@@ -479,7 +481,7 @@ class TCPServer:
             c_socket, addr = self.__socket.accept()
 
             handler = TCPServerSocket(c_socket, addr)
-            print(f"{handler.remote()} has connected.")
+            #print(f"{handler.remote()} has connected.")
             self.__clients.append(handler)
             self.__client_queue.put(handler)
             self.__connected_event.call()
@@ -491,9 +493,9 @@ class TCPServer:
     def __handler_disconnected(self):
         for handler in self.__clients:
             if handler.is_closed():
-                print(f"{handler.remote()} has disconnected.")
+                #print(f"{handler.remote()} has disconnected.")
                 self.__clients.remove(handler)
-                print(f"Remaining clients: {len(self.__clients)}")
+                #print(f"Remaining clients: {len(self.__clients)}")
 
                 self.__disconnected_event.call()
                 break

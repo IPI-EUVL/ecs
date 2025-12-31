@@ -73,7 +73,7 @@ class DDSServer:
                     if self.__handshake_received:
                         raise Exception("Handshake on existing connection!")
 
-                    print("Handshake received from ", self.__socket.remote())
+                    #print("Handshake received from ", self.__socket.remote())
                     self.__handshake_received = True
                     self.__socket.put(bytes([MAGIC_HANDSHAKE_CLIENT]))
                     self.__transactions.send_transaction(bytes([TRANSACT_REQ_UUID])).then(self.__transact_status_change)
@@ -91,19 +91,19 @@ class DDSServer:
         def __transact_status_change(self, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_data()[0] == TRANSACT_REQ_UUID:
                 if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-                    print("Get UUID transaction was NAK'd!")
+                    #print("Get UUID transaction was NAK'd!")
                     self.close()
 
                 assert handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_RET
 
                 self.__uuid = uuid.UUID(bytes=handle.get_result())
-                print(f"Got client UUID: ", self.__uuid)
+                #print(f"Got client UUID: ", self.__uuid)
                 self.__transactions.send_transaction(bytes([TRANSACT_CONN_READY])).then(self.__transact_status_change)
                 self.__server._got_client_uuid(self)
 
             if handle.get_data()[0] == TRANSACT_CONN_READY:
                 if handle.get_state() != transactions.TransactionManager.OutgoingTransactionHandle.STATE_RET:
-                    print("Ready transaction was NAK'd!")
+                    #print("Ready transaction was NAK'd!")
                     self.close()
 
 
@@ -117,31 +117,49 @@ class DDSServer:
                     t.ret(bytes())
                 else:
                     t.nak()
+                return
 
-            if t.get_data()[0] == TRANSACT_SET_KV:
+            elif t.get_data()[0] == TRANSACT_SET_KV:
                 (t_uuid, s_uuid, t_k, t_v) = segmented_bytearray.decode(t.get_data()[1:])
 
                 self.__server._set_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k, t_v)
+                return
 
-            if t.get_data()[0] == TRANSACT_GET_KV:
+            elif t.get_data()[0] == TRANSACT_GET_KV:
                 (t_uuid, s_uuid, t_k) = segmented_bytearray.decode(t.get_data()[1:])
 
                 self.__server._get_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
+                return
 
-            if t.get_data()[0] == TRANSACT_GET_KV_DESC:
+            elif t.get_data()[0] == TRANSACT_GET_KV_DESC:
                 (t_uuid, s_uuid, t_k) = segmented_bytearray.decode(t.get_data()[1:])
 
                 self.__server._get_kv_desc(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
+                return
 
-            if t.get_data()[0] == TRANSACT_RESOLVE:
+            elif t.get_data()[0] == TRANSACT_RESOLVE:
                 t_name, = segmented_bytearray.decode(t.get_data()[1:])
 
                 s = self.__server.find_subsystem(name=t_name)
                 if s == None:
-                    t.ret(bytes([TRANSOP_STATE_OK]) + bytes([0]))
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Not found")
                     return
                 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_uuid().bytes)
+                return
+
+            elif t.get_data()[0] == TRANSACT_GET_SUBSYSTEM:
+                t_uuid, = segmented_bytearray.decode(t.get_data()[1:])
+
+                s = self.__server.find_subsystem(uuid=uuid.UUID(bytes=t_uuid))
+                if s == None:
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Not found")
+                    return
+                
+                t.ret(bytes([TRANSOP_STATE_OK]) + s.get_info().encode())
+                return
+            else:
+                t.nak()
 
         def __flush_transponder(self):
             while not self.__transactions_msg_out_queue.empty():
@@ -203,7 +221,7 @@ class DDSServer:
                 if self.__kv_subscribers.get(key) is not None:
                     for s in self.__kv_subscribers[key]:
                         if s.closed():
-                            print("Unsubscribing", s.get_uuid(), "from", self.__info.get_name(), ":", key)
+                            #print("Unsubscribing", s.get_uuid(), "from", self.__info.get_name(), ":", key)
                             self.__kv_subscribers[key].remove(s)
 
                         s._on_subscription_update(self.__info.get_uuid(), key, val)
@@ -215,7 +233,7 @@ class DDSServer:
                 t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
                 return
 
-            self.__outgoing_transop(t, bytes([TRANSACT_RSET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, key, val]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RSET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key, val]))
 
         def on_get_kv_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
             cached = self.__kv_store.get(key)
@@ -224,10 +242,10 @@ class DDSServer:
                 t.ret(bytes([TRANSOP_STATE_OK]) + cached)
                 return
             
-            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, key]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
 
         def on_get_kv_desc_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
-            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV_DESC]) + segmented_bytearray.encode([self.get_uuid().bytes, key]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV_DESC]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
 
         def __outgoing_transop_returned(self, t : transactions.TransactionManager.IncomingTransactionHandle, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
@@ -301,14 +319,14 @@ class DDSServer:
     def __disconnected_client(self):
         for client in self.__clients:
             if client.closed():
-                if not client.is_shutdown():
-                    print("Client has abruptly disconnected!")
+                #if not client.is_shutdown():
+                #    print("Client has abruptly disconnected: ", client.get_uuid())
                 
-                print("Removing: ", client.get_uuid())
+                #print("Removing: ", client.get_uuid())
                 self.__clients.remove(client)
 
                 if client.get_uuid() == uuid.UUID(bytes=bytes(16)):
-                    print("Client config was not finished!")
+                    #print("Client disconnected before config was finished!")
                     continue
 
                 self.__clients_uuid.pop(client.get_uuid())
@@ -319,7 +337,7 @@ class DDSServer:
 
                     for s in self.__subsystems.values():
                         if s.get_client_uuid() == client.get_uuid():
-                            print("Subsystem ", s.get_uuid(), " has lost connection")
+                            #print("Subsystem ", s.get_uuid(), " has lost connection")
                             s.bind_client(None)
 
                             if s.get_info().get_temporary():
@@ -355,15 +373,15 @@ class DDSServer:
                     self._subscribe(r_uuid, s_uuid, key)
                     self.__pending_subscribers.remove((r_uuid, s_uuid, key))
 
-            print(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})")
+            #print(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})")
 
-            if s_info.get_temporary():
-                print("Subsystem is TEMPORARY. It will be removed once it's client disconnects!")
+            #if s_info.get_temporary():
+            #    print("Subsystem is TEMPORARY. It will be removed once it's client disconnects!")
 
 
         ok = subsystem.bind_client(self.__clients_uuid[c_uuid])
-        if ok:
-            print(f"Bound subsystem: {s_info.get_name()}({s_info.get_uuid()}) to client {c_uuid}")
+        #if ok:
+        #    print(f"Bound subsystem: {s_info.get_name()}({s_info.get_uuid()}) to client {c_uuid}")
 
         return ok
     
@@ -406,7 +424,7 @@ class DDSServer:
         r = self.__clients_uuid.get(r_uuid)
 
         if r is None:
-            print(f"Target receiver {r_uuid} to add subscriber not found, who are you?!")
+            #print(f"Target receiver {r_uuid} to add subscriber not found, who are you?!")
             return
 
         if s is None:

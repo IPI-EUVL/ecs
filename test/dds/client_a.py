@@ -8,16 +8,16 @@ import ipi_ecs.dds.client as client
 import ipi_ecs.dds.magics as magics
 
 p = None
-def handle_set(h, v):
-    print("Set value handasas", v)
+def handle_set(h, requester, v):
+    print("Set value handle", v)
     return (magics.TRANSOP_STATE_OK, bytes())
 
-def handle_get(h):
-    print("Get value handasas")
+def handle_get(h, requester):
+    print("Get value handle", requester)
     return (magics.TRANSOP_STATE_OK, b"MY VALUE")
 
 
-def setup_subsystem(handle: client.SubsystemHandle):
+def setup_subsystem(handle: client.RegisteredSubsystemHandle):
     global p
 
     print("Registered:", handle.get_info().get_name())
