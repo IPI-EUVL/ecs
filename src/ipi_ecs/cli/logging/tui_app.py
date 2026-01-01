@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover
         )
 
 
-def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> Text:
+def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix: Text | None = None) -> Text:
     rec = ln.record
     origin = rec.get("origin", {}) or {}
     ts_ns = origin.get("ts_ns")
@@ -65,6 +65,10 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> Text:
 
     t = Text()
     t.append(f"{ln.line:>10}  ", style="dim")
+
+    if range_prefix is not None:
+        t.append_text(range_prefix)
+
     t.append(f"{fmt_ns_local(ts_ns)}  ", style="dim")
     t.append(f"[{l_type}/{level}]  ", style=sev_style)
 
@@ -80,6 +84,132 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> Text:
     t.append(msg, style=sev_style if token in {"error", "warn"} else "")
 
     return t
+
+def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, gutter_width: int = 18, max_cols: int = 30, sep: int = 3) -> dict[int, Text]:
+    """Build per-visible-line prefix Text for a left gutter showing event ranges."""
+    if not ranges or not rows:
+        return {}
+
+    # normalize
+    norm: list[tuple[int, int, str]] = []
+    for a, b, label in ranges:
+        try:
+            a_i = int(a)
+
+            if b is None:
+                b_i = int(a)
+            else:
+                b_i = int(b)
+        except Exception:
+            raise
+        if b_i < a_i:
+            a_i, b_i = b_i, a_i
+        norm.append((a_i, b_i, str(label)))
+    ranges_n = norm[: max(1, int(max_cols))]
+    visible = [int(r.line) for r in rows]
+    if not visible:
+        return {}
+
+    w = max(6, int(gutter_width))
+
+    # pick a label line for each range (closest visible line to midpoint)
+    label_line_for: dict[tuple[int, int, str], int] = {}
+    for rng in ranges_n:
+        s, e, lbl = rng
+        if s == e:
+            label_line_for[rng] = s
+            continue
+
+        cands = [ln for ln in visible if s <= ln <= e]
+        if not cands:
+            continue
+        mid = (s + e) // 2
+        label_line_for[rng] = min(cands, key=lambda ln: abs(ln - mid))
+
+    max_overlap = dict()
+
+    for i in range(len(ranges_n)):
+        rng_a = ranges_n[i]
+        max_overlap[i] = 0
+        s, e, lbl = rng_a
+        for j in range(len(ranges_n)):
+            rng_b = ranges_n[j]
+            if i <= j:
+                break
+
+            s2, e2, lbl2 = rng_b
+            if (s2 <= e and e2 >= s) or (s < e2 and e > s2):
+                max_overlap[i] = max(max_overlap[j] + 1, max_overlap[i])
+
+    ranges_of_interest = dict()
+    for ln in visible:
+        ranges_of_interest[ln] = []
+        for i in range(len(ranges_n)):
+            rng = ranges_n[i]
+            
+            s, e, lbl = rng
+            if not (s <= ln <= e):
+                continue
+
+            m_position = max_overlap[i]
+            while len(ranges_of_interest[ln]) < m_position:
+                ranges_of_interest[ln].append(None)
+            
+            ranges_of_interest[ln].append(rng)
+
+    #raise Exception(max_overlap)
+
+    out: dict[int, Text] = {}
+    for ln in visible:
+        cols: list[str] = []
+        glyphs = ""
+        ranges_line = ranges_of_interest[ln]
+        for i in range(len(ranges_line)):
+            rng = ranges_line[i]
+
+            if rng is None: 
+                glyph = (" " * sep)
+            else:
+                s, e, lbl = rng
+                if rng is None or not (s <= ln <= e):
+                    glyph = (" " * sep)
+
+                # glyphs
+                elif s == e:
+                    glyph = "●"
+                elif ln == s:
+                    glyph = "┌"
+                elif ln == e:
+                    glyph = "└"
+                else:
+                    glyph = "│"
+
+            glyphs += glyph.ljust(sep)
+
+        text = ""
+        for i in range(len(ranges_line)):
+            rng = ranges_line[i]
+
+            if rng is None:
+                continue
+
+            s, e, lbl = rng
+
+            if label_line_for.get(rng) == ln:
+                max_lbl = w - 2
+                clean = lbl.replace("\n", " ").strip()
+
+                clean = glyphs[:sep * i] + ("├" if s != e else "●") + " " + clean
+
+                if len(clean) > max_lbl:
+                    clean = clean[: max(0, max_lbl - 1)] + "…"
+                text = clean
+
+        if text == "":
+            out[ln] = Text(glyphs.ljust(w), style="dim")
+        else:
+            out[ln] = Text(text.ljust(w), style="dim")
+    return out
 
 
 def _highlight_line(line: Text) -> Text:
@@ -271,20 +401,30 @@ def run_tui(
             self._show_uuids = False
             self._hide_uuids = False
 
-        def set_rows(self, rows, cursor: int, *, show_uuids: bool, hide_uuids: bool) -> None:
-            self.rows = rows
-            self.cursor = max(0, min(cursor, max(0, len(rows) - 1)))
-            self._show_uuids = show_uuids
-            self._hide_uuids = hide_uuids
-            self.refresh()
+            self.__show_gutter = True
+
+            # Optional range gutter: list[(start_line, end_line, label)]
+            self.ranges: list[tuple[int, int, str]] = [(0, 25, "mylabel"), (5, 35, "my other label"), (10, 45, "my other label")]
+
+
+        def set_ranges(self, ranges: list[tuple[int, int, str]] | None) -> None:
+            """Set the range gutter spans. Call with None or [] to clear."""
+            self.ranges = ranges or []
+            self._render()
+
+        def clear_ranges(self) -> None:
+            self.set_ranges([])
 
         def render(self) -> Text:
             if not self.rows:
                 return Text("(no data)")
+            
+            prefix_map = _build_range_prefix_map(self.rows, self.ranges, gutter_width=35, max_cols=30)
+            blank_prefix = Text(' ' * 18, style='dim') if self.ranges else None
 
             out = Text()
             for i, ln in enumerate(self.rows):
-                line = _format_logline_rich(ln, show_uuids=self._show_uuids, hide_uuids=self._hide_uuids)
+                line = _format_logline_rich(ln, show_uuids=self._show_uuids, hide_uuids=self._hide_uuids, range_prefix=(prefix_map.get(int(ln.line), blank_prefix) if blank_prefix is not None and self.__show_gutter else None))
                 if i == self.cursor:
                     line = _highlight_line(line)
                 out.append_text(line)
@@ -295,6 +435,21 @@ def run_tui(
         def set_id(self, id):
             self._id = id
             return self
+        
+        def highlight(self, start, end):
+            pass
+
+        def set_rows(self, rows, cursor: int, *, show_uuids: bool, hide_uuids: bool) -> None:
+            self.rows = rows
+            self.cursor = max(0, min(cursor, max(0, len(rows) - 1)))
+            self._show_uuids = show_uuids
+            self._hide_uuids = hide_uuids
+            self.refresh()
+
+        def toggle_gutter(self):
+            self.__show_gutter = not self.__show_gutter
+            self.refresh()
+
 
     class LogTUI(App):
         TITLE = "ipi-ecs log tui"
@@ -304,6 +459,8 @@ def run_tui(
         #main { height: 1fr; }
         #archives_wrap { width: 34; border: round $accent; }
         #archives_title { height: 1; padding: 0 1; }
+        #events_wrap { width: 44; border: round $accent; }
+        #events_title { height: 1; padding: 0 1; }
         #log_wrap { border: round $primary; height: 1fr; }
         #filter_modal, #detail_modal { border: round $accent; padding: 1; height: 95%; width: 95%; }
         #filter_scroll, #detail_scroll { height: 1fr; }
@@ -313,6 +470,7 @@ def run_tui(
         BINDINGS = [
             Binding("q", "quit", "Quit", priority=True),
             Binding("a", "toggle_archives", "Archives", priority=True),
+            Binding("e", "toggle_events", "Events", priority=True),
             Binding("/", "filters", "Query", priority=True),
             Binding("enter", "details", "Details", priority=True),
 
@@ -330,6 +488,11 @@ def run_tui(
 
             Binding("g", "home", "Home", priority=True),
             Binding("G", "end", "End", priority=True),
+
+            Binding("[", "event_start", "EvStart", priority=True),
+            Binding("]", "event_end", "EvEnd", priority=True),
+            Binding("E", "refresh_events", "Refresh Events", show=True, priority=True),
+            Binding("i", "toggle_gutter", "Toggle Event Gutter", show=True, priority=True),
         ]
 
         def __init__(self) -> None:
@@ -374,6 +537,12 @@ def run_tui(
             self._follow_enabled = bool(follow)
             self._poll = float(poll) if poll and poll > 0 else 1.0
 
+            # events panel state
+            self.events = []
+            self._selected_event_id = None
+            self.__refreshing = False
+            
+
         def compose(self) -> ComposeResult:
             yield Header()
             yield Static("", id="topbar")
@@ -381,6 +550,9 @@ def run_tui(
                 with Vertical(id="archives_wrap"):
                     yield Static("Archives", id="archives_title")
                     yield ListView(id="archives")
+                with Vertical(id="events_wrap"):
+                    yield Static("Events", id="events_title")
+                    yield ListView(id="events")
                 with Vertical(id="log_wrap"):
                     yield LogPane().set_id("log")
             yield Footer()
@@ -388,6 +560,12 @@ def run_tui(
         def on_mount(self) -> None:
             self._load_archives()
             self._open_archive(self.archive)
+
+            # Events panel starts hidden
+            try:
+                self.query_one("#events_wrap").display = False
+            except Exception:
+                pass
 
             # Wait for layout so we know viewport height
             self.call_after_refresh(self._jump_end_and_render)
@@ -459,6 +637,96 @@ def run_tui(
             self.archive = name
             self.view = viewer.open_archive(name)
             save_state(archive=self.archive, opts=self.opts)
+            self._refresh_events()
+
+        def _event_label(self, ev) -> str:
+            end = ev.end_line if ev.end_line is not None else ev.start_line
+            rng = f"{ev.start_line}" if end == ev.start_line else f"{ev.start_line}-{end}"
+            lvl = (ev.level or "").upper()
+            msg = (ev.message or "").strip()
+            if len(msg) > 80:
+                msg = msg[:77] + "..."
+            suffix = " (open)" if ev.end_line is None else ""
+            return f"{rng}  {ev.e_type}:{lvl}{suffix}  {msg}"
+
+        def _refresh_events(self) -> None:
+            lv = self.query_one("#events", ListView)
+
+            prev_id = getattr(self, "_selected_event_id", None)
+
+            # IMPORTANT: Don't assign explicit widget IDs to event rows.
+            # Textual may keep widgets alive briefly; reusing IDs can raise DuplicateIds.
+            lv.clear()
+
+            self.events = []
+            if self.view is None:
+                return
+
+            try:
+                self.events = self.view.list_events(limit=200, desc=True)
+            except Exception:
+                self.events = []
+
+            ranges = []
+
+            sel_index: int | None = None
+            for i, ev in enumerate(self.events):
+                lv.append(ListItem(Static(self._event_label(ev))))
+                if prev_id and str(ev.event_id) == str(prev_id):
+                    sel_index = i
+
+                ranges.append((ev.start_line, ev.end_line, ev.message))
+
+            self.query_one("#log", LogPane).set_ranges(ranges)                
+            if sel_index is not None:
+                try:
+                    lv.index = sel_index
+                except Exception:
+                    pass
+
+        def _selected_event(self):
+            if not self.events:
+                return None
+            if self._selected_event_id:
+                for ev in self.events:
+                    if ev.event_id == self._selected_event_id:
+                        return ev
+            try:
+                lv = self.query_one("#events", ListView)
+                idx = lv.index
+            except Exception:
+                idx = None
+            if idx is None or idx < 0 or idx >= len(self.events):
+                return None
+            return self.events[idx]
+
+        def _jump_to_abs_line(self, target_line: int) -> None:
+            if self.view is None or len(self.rows) == 0:
+                return
+            
+            n = self._page_size()
+
+            self.rows = self.view.window_after(self.opts, line_min_inclusive=int(target_line), window=1)
+
+            if len(self.rows) == 0:
+                return
+
+            while len(self.rows) < n:
+                before_rows = self.view.window_before(self.opts, line_max_exclusive=self.rows[0].line, window=1)
+                after_rows = self.view.window_after(self.opts, line_min_inclusive=self.rows[-1].line + 1, window=1)
+
+                if len(before_rows) == 0 and len(after_rows) == 0:
+                    break
+
+                self.rows = before_rows + self.rows + after_rows
+
+            for i in range(len(self.rows)):
+                r = self.rows[i]
+                if r.line == target_line:
+                    self.cursor = i
+                    break
+
+            self._render()
 
         def _jump_end_and_render(self) -> None:
             self._jump_end()
@@ -519,6 +787,32 @@ def run_tui(
         def action_toggle_archives(self) -> None:
             panel = self.query_one("#archives_wrap")
             panel.display = not panel.display
+
+        def action_toggle_events(self) -> None:
+            panel = self.query_one("#events_wrap")
+            panel.display = not panel.display
+
+            if panel.display:
+                self._refresh_events()
+
+        def action_toggle_gutter(self) -> None:
+            panel = self.query_one("#log", LogPane).toggle_gutter()
+
+        def action_refresh_events(self) -> None:
+            self._refresh_events()
+
+        def action_event_start(self) -> None:
+            ev = self._selected_event()
+            if ev is None:
+                return
+            self._jump_to_abs_line(int(ev.start_line))
+
+        def action_event_end(self) -> None:
+            ev = self._selected_event()
+            if ev is None:
+                return
+            end = int(ev.end_line) if ev.end_line is not None else int(ev.start_line)
+            self._jump_to_abs_line(end)
 
         def action_toggle_follow(self) -> None:
             self._follow_enabled = not self._follow_enabled
@@ -648,18 +942,39 @@ def run_tui(
             self.push_screen(FilterScreen(self.opts), callback=_cb)
 
         def on_list_view_selected(self, event: ListView.Selected) -> None:
-            if not event.item or not event.item.id:
+            lv = event.list_view
+            lv_id = str(getattr(lv, "id", "") or "")
+
+            # Archive selection still uses IDs.
+            if lv_id == "archives":
+                if not event.item or not event.item.id:
+                    return
+                item_id = str(event.item.id)
+                if item_id.startswith("archive_"):
+                    name = item_id.replace("archive_", "", 1)
+                    self._open_archive(name)
+                    self._jump_end()
+                    self._render()
+                    try:
+                        self.query_one("#log", LogPane).focus()
+                    except Exception:
+                        pass
                 return
-            if not event.item.id.startswith("archive_"):
+
+            # Event selection: items have no IDs; use ListView index -> self.events mapping.
+            if lv_id == "events":
+                idx = lv.index if lv is not None else None
+                if idx is None or idx < 0 or idx >= len(self.events):
+                    return
+
+                ev = self.events[idx]
+                self._selected_event_id = str(ev.event_id)
+                self._jump_to_abs_line(int(ev.start_line))
+                try:
+                    self.query_one("#log", LogPane).focus()
+                except Exception:
+                    pass
                 return
-            name = event.item.id.replace("archive_", "", 1)
-            self._open_archive(name)
-            self._jump_end()
-            self._render()
-            try:
-                self.query_one("#log", LogPane).focus()
-            except Exception:
-                pass
 
         def on_mouse_scroll_up(self, event) -> None:
             self.action_up()

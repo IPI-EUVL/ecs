@@ -31,6 +31,21 @@ class ArchiveInfo:
     end_line_exclusive: int
     start_ts_ns: int
     end_ts_ns: int
+@dataclass(frozen=True)
+class EventInfo:
+    event_id: str
+    e_type: str
+    level: str
+    message: str
+    start_line: int
+    end_line: int | None
+    start_ts_ns: int
+    end_ts_ns: int | None
+    data_start: dict[str, Any]
+    data_end: dict[str, Any]
+
+
+
 
 
 @dataclass
@@ -76,7 +91,7 @@ class QueryOptions:
             level=self.level,
             min_level_num=min_level_num,
             order_by=self.order_by,
-            desc=self.desc,
+            descending=self.desc,
             limit=self.limit,
         )
 
@@ -143,7 +158,7 @@ PT_STYLE: dict[str, str] = {
     "log.exp_hi": "fg:#44ff88 bold",
     "log.exp": "fg:#44ff88",
     "log.exp_low": "fg:#cccccc",
-    "log.rec": "fg:#666666",
+    "log.telem": "fg:#666666",
     "log.default": "",
 
     "log.lineno": "fg:#777777",
@@ -258,6 +273,68 @@ class ArchiveView:
         qopts.limit = window
         rows = self.reader.query(**{**qopts.to_db_kwargs(), "line_min": line_min_inclusive})
         return [LogLine(line, rec) for line, rec in rows]
+    
+    def window_between(self, opts: QueryOptions, *, line_min_inclusive: int | None, line_max_exclusive: int | None, window: int) -> list[LogLine]:
+        qopts = QueryOptions(**vars(opts))
+        qopts.order_by = "line"
+        qopts.desc = False
+        qopts.limit = window
+        rows = self.reader.query(**{**qopts.to_db_kwargs(), "line_min": line_min_inclusive, "line_max": line_max_exclusive})
+        return [LogLine(line, rec) for line, rec in rows]
+    # ----------------------------
+    # Event helpers (archive-local)
+    # ----------------------------
+    def list_events(
+        self,
+        *,
+        e_type: str | None = None,
+        open_only: bool | None = None,
+        line_min: int | None = None,
+        line_max: int | None = None,   # exclusive
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = None,
+        desc: bool = True,
+    ) -> list[EventInfo]:
+        ts_min = parse_time_to_ns(since) if since else None
+        ts_max = parse_time_to_ns(until) if until else None
+        rows = self.reader.list_events(
+            e_type=e_type,
+            open_only=open_only,
+            line_min=line_min,
+            line_max=line_max,
+            ts_min_ns=ts_min,
+            ts_max_ns=ts_max,
+            limit=limit,
+            desc=desc,
+        )
+        return [EventInfo(**r) for r in rows]
+
+    def get_event(self, event_id: str) -> EventInfo | None:
+        r = self.reader.get_event(event_id)
+        return EventInfo(**r) if r else None
+
+    def event_line_range(self, ev: EventInfo) -> tuple[int, int]:
+        """
+        Return inclusive (start_line, end_line) for viewing.
+
+        Open events (end_line is NULL) are treated as one-line markers.
+        """
+        start = int(ev.start_line)
+        end = int(ev.end_line) if ev.end_line is not None else start
+        if end < start:
+            end = start
+        return start, end
+
+    def apply_event_range(self, opts: QueryOptions, ev: EventInfo) -> QueryOptions:
+        """Copy opts and set line_from/line_to to this event's inclusive range."""
+        start, end = self.event_line_range(ev)
+        q = QueryOptions(**vars(opts))
+        q.line_from = start
+        q.line_to = end
+        return q
+
+
 
 
 class LogViewer:
@@ -303,7 +380,7 @@ class LogViewer:
             return 0
         conn = sqlite3.connect(str(db_path))
         try:
-            cur = conn.execute("SELECT value FROM meta WHERE key='next_line'")
+            cur = conn.execute("SELECT v FROM meta WHERE k='next_line'")
             row = cur.fetchone()
             return int(row[0]) if row else 0
         finally:

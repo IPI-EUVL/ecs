@@ -1,92 +1,93 @@
 from __future__ import annotations
 
-import bisect
 import json
-
 from pathlib import Path
 from typing import Any
 
+from ipi_ecs.logging.index import SQLiteIndex
 from ipi_ecs.logging.journal import SegmentInfo
 
 
 class JournalReader:
+    """
+    Backwards-compatible reader that *does not* rely on manifest.json.
+
+    Uses the archive's SQLite index (index.sqlite3) to locate records quickly.
+
+    `root` should be an archive directory containing:
+      - index.sqlite3
+      - segment_*.ndjson (or similar segment files referenced by the index)
+    """
+
     def __init__(self, root: Path):
         self.root = root
-        self.manifest_path = root / "manifest.json"
+        self.index = SQLiteIndex(root / "index.sqlite3")
         self.segments: list[SegmentInfo] = []
         self.next_line: int = 0
         self.refresh()
 
+    def close(self) -> None:
+        self.index.close()
+
     def refresh(self) -> None:
-        obj = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        self.segments = [SegmentInfo(**seg) for seg in obj.get("segments", [])]
-        self.next_line = int(obj.get("next_line", 0))
+        # next global line (exclusive)
+        self.next_line = int(self.index.get_next_line())
 
-    def _segments_for_range(self, start: int, end: int) -> list[SegmentInfo]:
-        out = []
-        for seg in self.segments:
-            seg_end = seg.end_line if seg.end_line is not None else 10**30
-            if seg.start_line < end and seg_end > start:
-                out.append(seg)
-        return out
+        # segments table is maintained by the writer (periodically updated during active segment)
+        rows = self.index.conn.execute(
+            "SELECT path, start_line, end_line, start_ts_ns, end_ts_ns FROM segments ORDER BY start_line ASC"
+        ).fetchall()
 
-    def _load_idx(self, seg: SegmentInfo) -> tuple[list[int], list[int]]:
-        """
-        Returns (lines, offsets). If no idx, returns empty lists.
-        """
-        if not seg.idx_path:
-            return ([], [])
-        idx_file = self.root / seg.idx_path
-        if not idx_file.exists():
-            return ([], [])
-        lines: list[int] = []
-        offs: list[int] = []
-        with idx_file.open("rb") as f:
-            for raw in f:
-                s = raw.decode("ascii", errors="ignore").strip()
-                if not s:
-                    continue
-                a, b = s.split("\t")
-                lines.append(int(a))
-                offs.append(int(b))
-        return (lines, offs)
+        segs: list[SegmentInfo] = []
+        for (path, start_line, end_line, start_ts_ns, end_ts_ns) in rows:
+            segs.append(
+                SegmentInfo(
+                    path=str(path),
+                    start_line=int(start_line),
+                    end_line=(int(end_line) if end_line is not None else None),
+                    start_ts_ns=int(start_ts_ns),
+                    end_ts_ns=(int(end_ts_ns) if end_ts_ns is not None else None),
+                    idx_path=None,  # idx files are optional; SQLite already stores byte offsets
+                )
+            )
+        self.segments = segs
 
     def read_between(self, start_linenum: int, end_linenum: int) -> list[dict[str, Any]]:
         """
         Returns records with global line numbers in [start_linenum, end_linenum).
-        Will see new segments after rollover because it refreshes manifest first.
+
+        This is compatible with the old manifest-based reader, but uses SQLite.
         """
+        # Refresh so rollovers are visible (segments + next_line)
         self.refresh()
 
         if end_linenum <= start_linenum:
             return []
 
-        records: list[dict[str, Any]] = []
-        for seg in self._segments_for_range(start_linenum, end_linenum):
-            path = self.root / seg.path
+        rows = self.index.query_lines(
+            line_min=int(start_linenum),
+            line_max=int(end_linenum),
+            order_by="line",
+            descending=False,
+            limit=None,
+        )
 
-            want_start = max(start_linenum, seg.start_line)
-            want_end = end_linenum if seg.end_line is None else min(end_linenum, seg.end_line)
-
-            # Optional seek optimization using idx checkpoints
-            idx_lines, idx_offs = self._load_idx(seg)
-            seek_line = seg.start_line
-            seek_off = 0
-            if idx_lines:
-                i = bisect.bisect_right(idx_lines, want_start) - 1
-                if i >= 0:
-                    seek_line = idx_lines[i]
-                    seek_off = idx_offs[i]
-
-            with path.open("rb") as f:
-                if seek_off:
-                    f.seek(seek_off)
-                cur = seek_line
-                for line in f:
-                    if cur >= want_end:
-                        break
-                    if cur >= want_start:
-                        records.append(json.loads(line.decode("utf-8")))
-                    cur += 1
-
-        return records
+        out: list[dict[str, Any]] = []
+        handles: dict[str, Any] = {}
+        try:
+            for _line, seg, off, ts_ns, level, level_num, uuid, l_type in rows:
+                f = handles.get(seg)
+                if f is None:
+                    f = (self.root / seg).open("rb")
+                    handles[seg] = f
+                f.seek(off)
+                raw = f.readline()
+                out.append((_line, json.loads(raw.decode("utf-8"))))
+        finally:
+            for f in handles.values():
+                try:
+                    f.close()
+                except Exception:
+                    pass
+        
+        return out

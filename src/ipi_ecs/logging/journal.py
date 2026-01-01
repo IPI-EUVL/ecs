@@ -78,20 +78,12 @@ class JournalWriter:
     def close(self) -> None:
         self._finalize_active_segment()
         self._save_manifest()
-        try:
-            self.index.conn.commit()
-        except Exception:
-            pass
-        try:
-            self.index.close()
-        except Exception:
-            pass
 
     def _load_manifest(self) -> None:
         if not self._manifest_path.exists():
             return
         obj = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        # NOTE: next_line is sourced from SQLite (index.sqlite3); do not override it from manifest.
+        self._global_line = int(obj.get("next_line", 0))
         self._segments = [SegmentInfo(**seg) for seg in obj.get("segments", [])]
 
     def _save_manifest(self) -> None:
@@ -115,7 +107,7 @@ class JournalWriter:
             self._active_seg.end_line = self._global_line
             self._active_seg.end_ts_ns = time.time_ns()
 
-            self.index.finalize_segment(self._active_name, self._global_line, time.time_ns())
+            self.index.finalize_segment(path=self._active_name, end_line=self._global_line, end_ts_ns=time.time_ns())
             self.index.conn.commit()
 
         for fp in (self._active_fp, self._active_idx_fp):
@@ -162,7 +154,7 @@ class JournalWriter:
         self._active_seg = seg
 
         self._active_name = path.name
-        self.index.create_segment(self._active_name, self._global_line, start_ns)
+        self.index.create_segment(path=self._active_name, start_line=self._global_line, start_ts_ns=start_ns)
         self.index.conn.commit()
 
         self._save_manifest()
@@ -176,6 +168,96 @@ class JournalWriter:
             size = 0
         age_s = (time.time_ns() - self._active_started_ns) / 1e9
         return (size >= self.rotate_max_bytes) or (age_s >= self.rotate_max_seconds)
+
+    # ----- Events (experiment markers) -----
+
+    def next_line(self) -> int:
+        """Return the next global line number that will be assigned to the next appended log record."""
+        return int(self._global_line)
+
+    def begin_event(
+        self,
+        *,
+        event_id: str,
+        e_type: str,
+        level: str,
+        message: str,
+        data_start: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Begin an event marker at the current global next_line().
+
+        Commits immediately so a crash mid-experiment still leaves an OPEN event marker in the archive DB.
+        """
+        start_line = int(self._global_line)
+        start_ts_ns = int(time.time_ns())
+        self.index.begin_event(
+            event_id=event_id,
+            e_type=e_type,
+            level=level,
+            message=message,
+            start_line=start_line,
+            start_ts_ns=start_ts_ns,
+            data_start=data_start,
+        )
+        self.index.conn.commit()
+        self._last_commit_mon = time.monotonic()
+
+    def end_event(
+        self,
+        *,
+        event_id: str,
+        data_end: dict[str, Any] | None = None,
+    ) -> bool:
+        """
+        End an event marker by id.
+
+        end_line is (next_line - 1), clamped >= start_line. Commits immediately.
+        """
+        end_ts_ns = int(time.time_ns())
+        end_line = int(self._global_line) - 1
+        if end_line < 0:
+            end_line = 0
+
+        ev = self.index.get_event(event_id)
+        if ev and isinstance(ev.start_line, int):
+            end_line = max(end_line, int(ev.start_line))
+
+        updated = self.index.end_event(
+            event_id=event_id,
+            end_line=end_line,
+            end_ts_ns=end_ts_ns,
+            data_end=data_end,
+        )
+        self.index.conn.commit()
+        self._last_commit_mon = time.monotonic()
+        return bool(updated)
+
+    def end_last_event(
+        self,
+        *,
+        e_type: str | None = None,
+        data_end: dict[str, Any] | None = None,
+    ) -> str | None:
+        """
+        Recovery helper: end the most recent OPEN event (optionally restricted by e_type).
+        Commits immediately.
+        """
+        end_ts_ns = int(time.time_ns())
+        end_line = int(self._global_line) - 1
+        if end_line < 0:
+            end_line = 0
+
+        ended_id = self.index.end_last_event(
+            e_type=e_type,
+            end_line=end_line,
+            end_ts_ns=end_ts_ns,
+            data_end=data_end,
+        )
+        if ended_id is not None:
+            self.index.conn.commit()
+            self._last_commit_mon = time.monotonic()
+        return ended_id
 
     def append(self, record: dict[str, Any]) -> int:
         if self._active_fp is None or self._should_rotate():
@@ -203,13 +285,13 @@ class JournalWriter:
         # index row
         self.index.insert_record(
             line=line_no,
-            origin_uuid=origin_uuid,
-            origin_ts_ns=origin_ts_ns,
+            uuid=origin_uuid,
+            ts_ns=origin_ts_ns,
             ingest_ts_ns=ingest_ts_ns,
             l_type=l_type,
             level=level,
             segment_path=self._active_name,
-            byte_off=byte_off,
+            offset=byte_off,
         )
 
         self._global_line += 1
@@ -221,7 +303,7 @@ class JournalWriter:
         # update the segments table so metadata stays current
         if (now_mon - self._last_seg_update_mon) >= self.segment_update_interval_s:
             # This is safe to call repeatedly; it’s just an UPDATE.
-            self.index.finalize_segment(self._active_name, self._global_line, time.time_ns())
+            self.index.finalize_segment(path=self._active_name, end_line=self._global_line, end_ts_ns=time.time_ns())
             self._last_seg_update_mon = now_mon
 
             # Optional: flush file so “tailing” sees bytes quickly
