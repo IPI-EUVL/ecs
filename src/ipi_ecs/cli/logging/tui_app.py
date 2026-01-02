@@ -97,14 +97,14 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
             a_i = int(a)
 
             if b is None:
-                b_i = int(a)
+                b_i = rows[-1].line
             else:
                 b_i = int(b)
         except Exception:
             raise
         if b_i < a_i:
             a_i, b_i = b_i, a_i
-        norm.append((a_i, b_i, str(label)))
+        norm.append((a_i, b_i, str(label), b))
     ranges_n = norm[: max(1, int(max_cols))]
     visible = [int(r.line) for r in rows]
     if not visible:
@@ -115,7 +115,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
     # pick a label line for each range (closest visible line to midpoint)
     label_line_for: dict[tuple[int, int, str], int] = {}
     for rng in ranges_n:
-        s, e, lbl = rng
+        s, e, lbl, end = rng
         if s == e:
             label_line_for[rng] = s
             continue
@@ -128,16 +128,19 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
 
     max_overlap = dict()
 
+    ranges_n.sort(key=lambda v: abs(v[0]-v[1]))
+    ranges_n.reverse()
+
     for i in range(len(ranges_n)):
         rng_a = ranges_n[i]
         max_overlap[i] = 0
-        s, e, lbl = rng_a
+        s, e, lbl, end = rng_a
         for j in range(len(ranges_n)):
             rng_b = ranges_n[j]
+            s2, e2, lbl2, end = rng_b
             if i <= j:
                 break
 
-            s2, e2, lbl2 = rng_b
             if (s2 <= e and e2 >= s) or (s < e2 and e > s2):
                 max_overlap[i] = max(max_overlap[j] + 1, max_overlap[i])
 
@@ -147,7 +150,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
         for i in range(len(ranges_n)):
             rng = ranges_n[i]
             
-            s, e, lbl = rng
+            s, e, lbl, end = rng
             if not (s <= ln <= e):
                 continue
 
@@ -160,6 +163,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
     #raise Exception(max_overlap)
 
     out: dict[int, Text] = {}
+    max_lbl = w - 2
     for ln in visible:
         cols: list[str] = []
         glyphs = ""
@@ -170,7 +174,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
             if rng is None: 
                 glyph = (" " * sep)
             else:
-                s, e, lbl = rng
+                s, e, lbl, end = rng
                 if rng is None or not (s <= ln <= e):
                     glyph = (" " * sep)
 
@@ -186,35 +190,53 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
 
             glyphs += glyph.ljust(sep)
 
-        text = ""
+            if len(glyphs) > max_lbl and not glyphs.isspace():
+                    glyphs = glyphs[: max(0, max_lbl - 1)] + "…"
+        glyphs_text = Text(glyphs.ljust(w), style="dim")
+
+        text = None
         for i in range(len(ranges_line)):
             rng = ranges_line[i]
 
             if rng is None:
                 continue
 
-            s, e, lbl = rng
+            s, e, lbl, end = rng
 
             if label_line_for.get(rng) == ln:
-                max_lbl = w - 2
                 clean = lbl.replace("\n", " ").strip()
+                if text is not None:
+                    clean = "(multiple)"
 
                 clean = glyphs[:sep * i] + ("├" if s != e else "●") + " " + clean
 
                 if len(clean) > max_lbl:
                     clean = clean[: max(0, max_lbl - 1)] + "…"
-                text = clean
+                text = Text(clean.ljust(w), style="dim")
+                text.highlight_words([lbl.replace("\n", " ").strip()], "orange1 underline")
 
-        if text == "":
-            out[ln] = Text(glyphs.ljust(w), style="dim")
+            if end is None and label_line_for.get(rng) + 1 == ln:
+                max_lbl = w - 2
+                clean = lbl.replace("\n", " ").strip()
+
+                clean = glyphs[:sep * i + 1] + " (ONGOING)"
+
+                if len(clean) > max_lbl:
+                    clean = clean[: max(0, max_lbl - 1)] + "…"
+
+                text = Text(clean.ljust(w), style="")
+                text.highlight_words([lbl.replace("\n", " ").strip()], "orange1 underline blink")
+
+        if text is None:
+            out[ln] = glyphs_text
         else:
-            out[ln] = Text(text.ljust(w), style="dim")
+            out[ln] = text
     return out
 
 
 def _highlight_line(line: Text) -> Text:
     out = line.copy()
-    out.stylize("reverse")
+    out.stylize("reverse blink")
     return out
 
 
@@ -580,7 +602,7 @@ def run_tui(
                 try:
                     self.set_interval(self._poll, self._poll_new_lines)
                 except Exception:
-                    pass
+                    raise
 
         # ----- Layout helpers -----
         def _page_size(self) -> int:
@@ -600,7 +622,7 @@ def run_tui(
             try:
                 if not self.rows:
                     return True
-                return (self.rows[-1].line == (self._end_exclusive() - 1)) and (self.cursor == len(self.rows) - 1)
+                return (self.cursor == len(self.rows) - 1)
             except Exception:
                 return False
 
@@ -771,17 +793,21 @@ def run_tui(
                 return
             if not self._tail_selected():
                 return
-
+            
             last_line = self.rows[-1].line if self.rows else -1
             n = self._page_size()
             new_rows = self.view.window_before(self.opts, line_max_exclusive=self._end_exclusive(), window=n)
             if not new_rows:
                 return
+                        
             if new_rows[-1].line != last_line:
+
                 self.rows = new_rows
                 self.cursor = len(self.rows) - 1
                 self._at_end_view = True
+                self._jump_end()
                 self._render()
+                self._refresh_events()
 
         # ----- Actions -----
         def action_toggle_archives(self) -> None:
