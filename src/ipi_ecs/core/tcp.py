@@ -49,7 +49,9 @@ def unescape_bytes(b: bytes):
             out += ESCAPE
             b = b[s+4:]
         else:
-            raise ValueError("Invalid escape sequence")
+            b = b[s+2:]
+            pass
+            #raise ValueError("Invalid escape sequence")
         
     out += b
         
@@ -188,6 +190,8 @@ class TCPSocket:
                 continue
 
             self.__last_data = time.time()
+
+            #print(data)
 
             if data == bytes([0x00]):
                 continue
