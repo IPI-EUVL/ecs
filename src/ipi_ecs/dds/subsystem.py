@@ -29,6 +29,22 @@ class SubsystemInfo:
 
         return descs
     
+    def get_events(self):
+        if len(self.__events) == 0:
+            return ([], [])
+        
+        b_providers, b_handlers = segmented_bytearray.decode(self.__events)
+        providers = []
+        handlers = []
+
+        for desc in segmented_bytearray.decode(b_providers):
+            providers.append(EventDescriptor.decode(desc))
+
+        for desc in segmented_bytearray.decode(b_handlers):
+            handlers.append(EventDescriptor.decode(desc))
+
+        return (providers, handlers)
+    
     def encode(self):
         return segmented_bytearray.encode([self.__uuid.bytes, self.__name.encode("utf-8"), self.__temporary.to_bytes(length=1, byteorder="big"), self.__kv_infos, self.__events])
     
@@ -100,4 +116,4 @@ class EventDescriptor:
         s_ptype = types.decode(b_ptype)
         s_rtype = types.decode(b_rtype)
 
-        return EventDescriptor(b_ptype, b_rtype, name)
+        return EventDescriptor(s_ptype, s_rtype, name)
