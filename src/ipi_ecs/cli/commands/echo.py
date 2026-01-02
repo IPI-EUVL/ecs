@@ -26,7 +26,7 @@ class EchoClient:
 
         #print("Registering subsystem...")
         self.__client = client.DDSClient(uuid.uuid4())
-        self.__client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid4(), "__cli")).then(self.__on_got_subsystem)
+        self.__client.register_subsystem("__cli", uuid.uuid4(), temporary=True).then(self.__on_got_subsystem)
 
     def __on_got_subsystem(self, handle: client.RegisteredSubsystemHandle):
         def __setup_kv(uuid):
