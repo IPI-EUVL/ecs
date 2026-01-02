@@ -726,12 +726,14 @@ class DDSClient:
             lp = _LocalProperty(key, self, writable, readable, cache)
             self.__kv_providers[key] = lp
 
+            self.invalidate()
             return lp.get_handle()
         
         def add_kv_handler(self, key : bytes):
             lp = _KVHandler(key, self)
             self.__kv_providers[key] = lp
 
+            self.invalidate()
             return lp.get_handle()
         
         def add_remote_kv(self, t_uuid : uuid.UUID, desc : KVDescriptor):
@@ -806,12 +808,14 @@ class DDSClient:
             e = _EventProvider(name, self)
 
             self.__event_providers[name] = e
+            self.invalidate()
             return e.get_handle()
         
         def add_event_handler(self, name : bytes):
             e = _EventHandler(self, name)
 
             self.__event_handlers[name] = e
+            self.invalidate()
             return e.get_handle()
         
         def on_event_return(self, e_uuid: uuid.UUID, r_uuid: uuid.UUID, status: int, ret_value: bytes):
