@@ -62,11 +62,15 @@ class Awaiter:
             self.__awaiter = awaiter
 
         def then(self, fn, pargs = [], kwargs = dict()):
-            self.__awaiter.then(fn, pargs, kwargs)
+            return self.__awaiter.then(fn, pargs, kwargs)
+        
+        def catch(self, fn, pargs = [], kwargs = dict()):
+            return self.__awaiter.catch(fn, pargs, kwargs)
 
     def __init__(self):
         self.__params = dict()
         self.__cb_fn = None
+        self.__except_fn = None
 
     def get_handle(self):
         return self.AwaiterHandle(self)
@@ -79,6 +83,15 @@ class Awaiter:
         self.__cb_pargs = list(pargs)
         self.__cb_kwargs = dict(kwargs)
 
+        return self.AwaiterHandle(self)
+
+    def catch(self, fn, pargs = [], kwargs = dict()):
+        self.__except_fn = fn
+        self.__except_pargs = list(pargs)
+        self.__except_kwargs = dict(kwargs)
+
+        return self.AwaiterHandle(self)
+
     def call(self, *pargs, **kwargs):
         if self.__cb_fn is not None:
             combined_args = self.__cb_kwargs
@@ -90,3 +103,15 @@ class Awaiter:
                 combined_args[key] = kwargs[key]
 
             self.__cb_fn(*(list(pargs) + self.__cb_pargs), **combined_args)
+
+    def throw(self, *pargs, **kwargs):
+        if self.__except_fn is not None:
+            combined_args = self.__except_kwargs
+
+            for key in self.__params.keys():
+                combined_args[key] = self.__params[key]
+
+            for key in kwargs.keys():
+                combined_args[key] = kwargs[key]
+
+            self.__except_fn(*(list(pargs) + self.__except_pargs), **combined_args)

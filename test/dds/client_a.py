@@ -8,37 +8,84 @@ import ipi_ecs.dds.client as client
 import ipi_ecs.dds.magics as magics
 
 p = None
-def handle_set(h, requester, v):
+e_p = None
+e_h = None
+
+rec_event_handle = None
+def handle_set(requester, v):
     print("Set value handle", v)
     return (magics.TRANSOP_STATE_OK, bytes())
 
-def handle_get(h, requester):
+def handle_get(requester):
     print("Get value handle", requester)
     return (magics.TRANSOP_STATE_OK, b"MY VALUE")
 
+def handle_event(s_uuid, param, handle: client._EventHandler.IncomingEventHandle):
+    global rec_event_handle
+    print("called event handle", param)
+    rec_event_handle = handle
+    #handle.ret(b"MY BALUE")
+
 
 def setup_subsystem(handle: client.RegisteredSubsystemHandle):
-    global p
+    global p, e_p, e_h
 
     print("Registered:", handle.get_info().get_name())
           
     p = handle.get_kv_property(b"test property", cache=True)
     kv_h = handle.add_kv_handler(b"test property handler")
+    e_p = handle.add_event_provider(b"test eventer")
     kv_h.on_set(handle_set)
     kv_h.on_get(handle_get)
+
+    e_handler = handle.add_event_handler(b"test eventer") #Subsystems CAN handle events sent by themselves! (This is not a bug, totally a feature!!)
+    e_handler.on_called(handle_event)
+
+    e_h = e_p.call(b"I HAVE CALLED THE EVENT", [])
+    e_h.after().catch(lambda state, reason: print("Problem with event: ", reason)).then(lambda h: print("Event has finished"))
+
 
     t = types.IntegerTypeSpecifier()
     p.set_type(t)
     p.value = 0
 
 m_client = client.DDSClient(uuid.uuid4())
-m_client.register_subsystem(subsystem.SubsystemInfo(uuid.uuid3(uuid.NAMESPACE_OID, "1"), "my subsystem", False)).then(setup_subsystem)
+m_client.register_subsystem("my subsystem", uuid.uuid3(uuid.NAMESPACE_OID, "1")).then(setup_subsystem)
+time.sleep(0.5)
+
+cli_uuid = None
+def set_cli_uuid(val):
+    global cli_uuid
+    cli_uuid = val
+
+m_client.resolve(b"__cli").then(set_cli_uuid).catch(lambda state, reason: print("Could not resolve:", reason))
 
 time.sleep(1)
+
+print(e_h.get_event_state())
+print(e_h.is_in_progress())
+print(e_h.get_uuid())
+print(e_h.get_result(uuid.uuid3(uuid.NAMESPACE_OID, "1")))
+print(e_h.get_result(cli_uuid))
+print(e_h.get_state(uuid.uuid3(uuid.NAMESPACE_OID, "1")))
+print(e_h.get_state(cli_uuid))
+
+time.sleep(1)
+rec_event_handle.ret(b"MY RETURN VALUE")
+time.sleep(0.1)
+print(e_h.get_event_state())
+print(e_h.is_in_progress())
+print(e_h.get_uuid())
+print(e_h.get_result(uuid.uuid3(uuid.NAMESPACE_OID, "1")))
+print(e_h.get_result(cli_uuid))
+print(e_h.get_state(uuid.uuid3(uuid.NAMESPACE_OID, "1")))
+print(e_h.get_state(cli_uuid))
+
 #p2 = client.add_kv(b"test property2")
 #p2.value = b"my value2"
 
 i = 0
+
 
 try:
     while m_client.ok():
