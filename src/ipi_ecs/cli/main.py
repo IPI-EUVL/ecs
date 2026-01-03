@@ -10,9 +10,9 @@ from ipi_ecs.logging.logger_server import run_logger_server
 from ipi_ecs.logging.viewer import LogViewer, QueryOptions, format_line, get_format_color, PT_STYLE, RICH_STYLE, get_subsystem, resolve_log_dir
 from ipi_ecs.logging.timefmt import fmt_ns_local
 from ipi_ecs.logging.reader import JournalReader
-from ipi_ecs.dds.server import DDSServer
 
 import ipi_ecs.cli.commands.echo as echo
+import ipi_ecs.cli.commands.server as server
 
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
 
@@ -604,26 +604,9 @@ def cmd_log_event_query(args: argparse.Namespace) -> int:
 
     # Prefer showing the exact event range + context, with no filters.
     for rec in j.read_between(line_min, line_max):
-        print(format_line(LogL))
+        print(format_line(rec))
 
     return 0
-
-def cmd_server(args: argparse.Namespace) -> int:
-    m_server = DDSServer(args.host, args.port)
-    m_server.start()
-
-    time.sleep(0.1)
-
-    try:
-        while m_server.ok():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        m_server.close()
-
-    return 0
-
 
 # ----------------------------
 # Argparse helpers
@@ -801,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("server", help="Run the ECS DDS server.")
     ps.add_argument("--host", default="0.0.0.0")
     ps.add_argument("--port", type=int, default=None)
-    ps.set_defaults(fn=cmd_server)
+    ps.set_defaults(fn=server.cmd_server)
 
     # echo
     pe = sub.add_parser("echo", help="Echo a DDS key from a subsystem.")
