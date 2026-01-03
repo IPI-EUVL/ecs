@@ -105,7 +105,7 @@ class Daemon:
         
     def __on_exception(self, exception : Exception):
         print("Caught exception in daemon thread!")
-        traceback.print_exception(etype=type(exception), value=exception, tb=None)
+        traceback.print_exception(type(exception), value=exception, tb=None)
 
         if self.__exception_handler is not None:
             self.__exception_handler(exception)
