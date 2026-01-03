@@ -32,6 +32,25 @@ class EchoClient:
         def __setup_kv(uuid):
             handle.get_subsystem(uuid).then(lambda subsystem: subsystem.get_kv(self.__key).then(self.__on_got_kv))
 
+        sys = handle.get_all()
+
+        for i, ok in sys.values():
+            print("Found subsystem: ", i.get_name())
+            print("UUID: ", i.get_uuid())
+            print("Is connected: ", ok)
+            print("Is temporary: ", i.get_temporary())
+
+            for kv in i.get_kvs():
+                print(f"Provides KV: {kv.get_key().decode()} R:{kv.get_readable()} W:{kv.get_writable()} P:{kv.get_published()}")
+
+            ps, hs = i.get_events()
+
+            for p in ps:
+                print("Provides Event: ", p.get_name())
+
+            for h in hs:
+                print("Handles Event: ", h.get_name())
+
         if self.__target is not None:
             __setup_kv(self.__target)
         else:
@@ -59,6 +78,7 @@ class EchoClient:
         return self.__remote_kv.is_cached() if self.__remote_kv is not None else True
 
 def main(args: argparse.Namespace):
+    print(args.name, args.sys, args.key)
     m_client = EchoClient(args.name, args.sys, args.key)
 
     m_awaiter = mt_events.EventConsumer()

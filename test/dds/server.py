@@ -2,9 +2,9 @@ import time
 
 import ipi_ecs.dds.server as server
 
-server = server.DDSServer()
-server.start()
+my_server = server.get_server("0.0.0.0", None)
+my_server.start()
 
 time.sleep(1)
-while server.ok():
+while my_server.ok():
     time.sleep(1)

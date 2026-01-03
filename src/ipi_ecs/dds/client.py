@@ -2,15 +2,24 @@ import queue
 import time
 import uuid
 
-import ipi_ecs.core.tcp as tcp
-import ipi_ecs.core.daemon as daemon
-import ipi_ecs.core.mt_events as mt_events
-import ipi_ecs.core.transactions as transactions
-import ipi_ecs.core.segmented_bytearray as segmented_bytearray
+from ipi_ecs.core import tcp
+from ipi_ecs.core import daemon
+from ipi_ecs.core import mt_events
+from ipi_ecs.core import transactions
+from ipi_ecs.core import segmented_bytearray
 
 from ipi_ecs.dds.subsystem import SubsystemInfo, KVDescriptor, EventDescriptor
 from ipi_ecs.dds.types import PropertyTypeSpecifier, ByteTypeSpecifier
+
+# I don't want to have to add all magic values one by one, pylance! Stop complaining!
+# pylint: disable=wildcard-import, unused-wildcard-import
 from ipi_ecs.dds.magics import *
+
+
+# pylint: disable=line-too-long
+# pylint: disable=missing-function-docstring, missing-class-docstring, trailing-whitespace
+# pylint: disable=unbalanced-tuple-unpacking
+# pylint: disable=unused-private-member
 
 class _TransOpHandle:
     class _TransOpReturnHandle:
@@ -158,7 +167,7 @@ class InProgressEvent:
         def _state_change(v):
             self.__state = EVENT_IN_PROGRESS
             b_e_uuid, b_rets = segmented_bytearray.decode(v)
-            ret_status = []
+
             rets = segmented_bytearray.decode(b_rets)
 
             for ret in rets:
@@ -186,8 +195,8 @@ class InProgressEvent:
         if status == EVENT_OK:
             try:
                 v = self.__r_type.parse(data)
-            except ValueError:
-                raise ValueError("Returned value is incompatible with expected return type")
+            except ValueError as exc:
+                raise ValueError("Returned value is incompatible with expected return type") from exc
         else:
             v = data
         
@@ -200,7 +209,7 @@ class InProgressEvent:
         v = self.__results.get(t_uuid)
         if v is None:
             return None
-        s, d = v
+        _, d = v
 
         return d
     
@@ -208,7 +217,7 @@ class InProgressEvent:
         v = self.__results.get(t_uuid)
         if v is None:
             return None
-        s, d = v
+        s, _ = v
 
         return s
     
@@ -225,7 +234,7 @@ class InProgressEvent:
         if len(self.__results.keys()) == 0:
             return True
         
-        for s, r in self.__results.values():
+        for s, _ in self.__results.values():
             if s == EVENT_IN_PROGRESS:
                 return True
             
@@ -277,6 +286,7 @@ class _EventHandler:
         self.__r_type = ByteTypeSpecifier()
 
         self.__handle = self._Handle(self)
+        self.__on_call = None
         
     def handle_call(self, sender: uuid.UUID, e_uuid: uuid.UUID, value: bytes):
         v = None
@@ -314,7 +324,7 @@ class _EventHandler:
     def get_handle(self):
         return self.__handle
     
-    def get_descriptor(self, requester: uuid.UUID):
+    def get_descriptor(self, _: uuid.UUID):
         return EventDescriptor(self.__p_type, self.__r_type, self.__name).encode()
     
 class _EventProvider:
@@ -345,8 +355,8 @@ class _EventProvider:
         v = None
         try:
             v = self.__p_type.encode(value)
-        except ValueError:
-            raise ValueError("Parameter type is incompatible with provided value")
+        except ValueError as exc:
+            raise ValueError("Parameter type is incompatible with provided value") from exc
         
         t_bytes = []
 
@@ -355,7 +365,7 @@ class _EventProvider:
         
         t_bytes = segmented_bytearray.encode(t_bytes)
         
-        a = self.__subsystem.get_client()._call_event(self.__name, v, t_bytes, self.__subsystem.get_uuid(), KVP_RET_AWAIT)
+        a = self.__subsystem.get_client().call_event(self.__name, v, t_bytes, self.__subsystem.get_uuid(), KVP_RET_AWAIT)
         h = InProgressEvent(self.__name, self.__subsystem, self.__r_type, a)
 
         return h.get_handle()
@@ -370,7 +380,7 @@ class _EventProvider:
     def get_handle(self):
         return self.__handle
     
-    def get_descriptor(self, requester: uuid.UUID):
+    def get_descriptor(self, _: uuid.UUID):
         return EventDescriptor(self.__p_type, self.__r_type, self.__name).encode()
     
 class _KVHandlerBase:
@@ -523,15 +533,15 @@ class _LocalProperty(_KVHandlerBase):
         encoded = None
         try:
             encoded = self.__p_type.encode(value)
-        except ValueError:
-            raise ValueError("Property type is incompatible with provided value")
+        except ValueError as exc:
+            raise ValueError("Property type is incompatible with provided value") from exc
         
         self.__value = encoded
 
         if self.__send:
-            self.__subsystem.get_client()._set_kv(self.__key, self.__value, self.__subsystem.get_uuid(), self.__subsystem.get_uuid())
+            self.__subsystem.get_client().set_kv(self.__key, self.__value, self.__subsystem.get_uuid(), self.__subsystem.get_uuid())
 
-    def handle_get_value(self, p_type : PropertyTypeSpecifier):
+    def handle_get_value(self):
         return self.__p_type.parse(self.__value)
     
     def get_handle(self):
@@ -549,7 +559,7 @@ class _LocalProperty(_KVHandlerBase):
         self.__new_data_handler = func
     
 class _RemoteProperty:
-    class __PropertyHandler:
+    class _PropertyHandler:
         def __init__(self, provider : "_RemoteProperty"):
             self.__property = provider
 
@@ -559,7 +569,7 @@ class _RemoteProperty:
         def __read(self):
             return self.__property.handle_get_value()
         
-        def __del(self): 
+        def __del(self):
             return
         
         def set_type(self, p_type : PropertyTypeSpecifier):
@@ -583,16 +593,19 @@ class _RemoteProperty:
         if self.__p_type is None:
             self.__p_type = ByteTypeSpecifier()
 
-        self.__property_handler = self.__PropertyHandler(self)
+        self.__property_handler = self._PropertyHandler(self)
 
         self.__value = None
 
         self.__readable = readable
         self.__writable = writable
 
+        self.__new_data_handler = None
+
         if self.__subscribe:
             self.__subsystem.get_client()._add_active_subscriber(self)
 
+    @staticmethod
     def from_descriptor(d : KVDescriptor, subsystem : "DDSClient._RegisteredSubsystem", remote: uuid.UUID):
         key = d.get_key()
         sub = d.get_published()
@@ -621,10 +634,10 @@ class _RemoteProperty:
         encoded = None
         try:
             encoded = self.__p_type.encode(value)
-        except ValueError:
-            raise ValueError("Property type is incompatible with provided value")
+        except ValueError as exc:
+            raise ValueError("Property type is incompatible with provided value") from exc
         
-        self.__subsystem.get_client()._set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid())
+        self.__subsystem.get_client().set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid())
 
     def handle_get_value(self):
         if not self.__readable:
@@ -633,8 +646,8 @@ class _RemoteProperty:
         if self.__value is not None:
             try:
                 return self.__p_type.parse(self.__value)
-            except ValueError:
-                raise ValueError("Received value type incompatible with declared value type!")
+            except ValueError as exc:
+                raise ValueError("Received value type incompatible with declared value type!") from exc
         
         if self.__subscribe:
             return None
@@ -654,8 +667,8 @@ class _RemoteProperty:
 
         try:
             return self.__p_type.parse(handle.get_value())
-        except ValueError:
-            raise ValueError("Received value type incompatible with declared value type!")
+        except ValueError as exc:
+            raise ValueError("Received value type incompatible with declared value type!") from exc
     
     def get_handle(self):
         return self.__property_handler
@@ -749,21 +762,21 @@ class DDSClient:
             return self.__client
         
         def get_kv(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
-            return self.__client._get_kv(key, target_uuid, self.get_uuid(), ret)
+            return self.__client.get_kv(key, target_uuid, self.get_uuid(), ret)
             
         def get_kv_desc(self, target_uuid : uuid.UUID, key : bytes, ret = KVP_RET_AWAIT):
-            return self.__client._get_kv_desc(key, target_uuid, self.get_uuid(), ret)
+            return self.__client.get_kv_desc(key, target_uuid, self.get_uuid(), ret)
             
         def set_kv(self, target_uuid : uuid.UUID, key : bytes, val: bytes, ret = KVP_RET_AWAIT):
-            return self.__client._set_kv(key, val, target_uuid, self.get_uuid(), ret)
+            return self.__client.set_kv(key, val, target_uuid, self.get_uuid(), ret)
         
         def get_subsystem(self, target_uuid : uuid.UUID, ret = KVP_RET_AWAIT):
-            return self.__client._get_subsystem(target_uuid, self.get_uuid(), ret)
+            return self.__client.get_subsystem(target_uuid, self.get_uuid(), ret)
             
         def get_kv_descriptors(self):
             r = []
 
-            for (k, kvp) in self.__kv_providers.items():
+            for (_, kvp) in self.__kv_providers.items():
                 r.append(kvp.get_type_descriptor(self.get_uuid()))
             
             return segmented_bytearray.encode(r)
@@ -772,10 +785,10 @@ class DDSClient:
             h = []
             p = []
 
-            for (k, e) in self.__event_handlers.items():
+            for (_, e) in self.__event_handlers.items():
                 h.append(e.get_descriptor(self.get_uuid()))
 
-            for (k, e) in self.__event_providers.items():
+            for (_, e) in self.__event_providers.items():
                 p.append(e.get_descriptor(self.get_uuid()))
             
             return segmented_bytearray.encode([segmented_bytearray.encode(h), segmented_bytearray.encode(p)])
@@ -790,10 +803,10 @@ class DDSClient:
         
         def invalidate(self):
             self.__info = SubsystemInfo(self.__info.get_uuid(), self.__info.get_name(), self.__info.get_temporary(), self.get_kv_descriptors(), self.get_event_descriptors())
-            self.__client._send_subsystem_info(self.__info)
+            self.__client.send_subsystem_info(self.__info)
 
         def get_system(self):
-            return self.__client._get_system(self)
+            return self.__client.get_system(self)
         
         def add_in_progress_event(self, e: InProgressEvent):
             self.__in_progress_events[e.get_uuid()] = e
@@ -891,6 +904,7 @@ class DDSClient:
         self.__daemon.start()
 
     def __receive(self):
+        #pylint: disable=unbalanced-tuple-unpacking
         while not self.__socket.empty():
             d = self.__socket.get()
 
@@ -899,13 +913,13 @@ class DDSClient:
 
             if d == bytes([MAGIC_HANDSHAKE_SERVER]):
                 if self.__handshake_received:
-                    raise Exception("Handshake on existing connection!")
+                    raise IOError("Handshake on existing connection!")
 
                 #print("Handshake received from ", self.__socket.remote())
                 self.__handshake_received = True
 
             if not self.__handshake_received:
-                raise Exception("Invalid handshake received!")
+                raise IOError("Invalid handshake received!")
 
             if d[0] == MAGIC_TRANSACT:
                 self.__transactions.received(d[1:])
@@ -942,6 +956,7 @@ class DDSClient:
                 s.on_event_return(e_uuid, r_uuid, status, ret_value)
 
     def __receive_transact(self):
+        # pylint: disable=unbalanced-tuple-unpacking
         t = self.__transactions.get_incoming()
 
         if t.get_data()[0] == TRANSACT_REQ_UUID:
@@ -949,7 +964,7 @@ class DDSClient:
         
         elif t.get_data()[0] == TRANSACT_CONN_READY:
             if self.__is_ready:
-                raise Exception("Received ready transaction twice!")
+                raise IOError("Received ready transaction twice!")
             
             self.__ready()
             t.ret(self.__uuid.bytes)
@@ -991,6 +1006,7 @@ class DDSClient:
             t.nak()
     
     def __rget_kv(self, t: transactions.TransactionManager.IncomingTransactionHandle):
+        # pylint: disable=unbalanced-tuple-unpacking
         (t_uuid, s_uuid, key) = segmented_bytearray.decode(t.get_data()[1:])
 
         t_uuid = uuid.UUID(bytes=t_uuid)
@@ -1011,6 +1027,7 @@ class DDSClient:
         t.ret(bytes([state]) + data)
 
     def __rset_kv(self, t: transactions.TransactionManager.IncomingTransactionHandle):
+        # pylint: disable=unbalanced-tuple-unpacking
         (t_uuid, s_uuid, key, value) = segmented_bytearray.decode(t.get_data()[1:])
 
         t_uuid = uuid.UUID(bytes=t_uuid)
@@ -1029,7 +1046,8 @@ class DDSClient:
         state, data = p.remote_set(s_uuid, value)
         t.ret(bytes([state]) + data)
 
-    def __r_event(self, t: transactions.TransactionManager.IncomingTransactionHandle):
+    # pylint: disable=pointless-string-statement
+    """def __r_event(self, t: transactions.TransactionManager.IncomingTransactionHandle):
         (t_uuid, s_uuid, e_name, value) = segmented_bytearray.decode(t.get_data()[1:])
 
         t_uuid = uuid.UUID(bytes=t_uuid)
@@ -1045,8 +1063,8 @@ class DDSClient:
             t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem does not handle specified event.")
             return
 
-        state, data = p.call(data)
-        t.ret(bytes([state]) + data)
+        state, data = p.call(value)
+        t.ret(bytes([state]) + data)"""
 
     def __flush_transponder(self):
         while not self.__transactions_msg_out_queue.empty():
@@ -1127,8 +1145,8 @@ class DDSClient:
     def ok(self):
         return not self.__socket.is_closed() and self.__daemon.is_alive()
     
-    def register_subsystem(self, name: str, uuid: uuid.UUID, temporary = False):
-        self.__subsystem_info.append(SubsystemInfo(uuid, name, temporary))
+    def register_subsystem(self, name: str, s_uuid: uuid.UUID, temporary = False):
+        self.__subsystem_info.append(SubsystemInfo(s_uuid, name, temporary))
         return self.__registered_awaiter.get_handle()
     
     def __transop(self, data, await_type = KVP_RET_AWAIT, unpack_value = None):
@@ -1182,35 +1200,32 @@ class DDSClient:
         op_handle.set_reason(reason)
         op_handle.set_value(value)
 
-    def _set_kv(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+    def set_kv(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
         return self.__transop(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val]), ret_type)
 
-    def _get_kv(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+    def get_kv(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
         return self.__transop(bytes([TRANSACT_GET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
     
-    def _get_kv_desc(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        unpacker = lambda v: KVDescriptor.decode(v)
-
-        return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type, unpack_value=unpacker)
+    def get_kv_desc(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type, unpack_value=KVDescriptor.decode)
     
-    def _call_event(self, key : str, param : bytes, t_uuids : bytes, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+    def call_event(self, key : str, param : bytes, t_uuids : bytes, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
         return self.__transop(bytes([TRANSACT_CALL_EVENT]) + segmented_bytearray.encode([t_uuids, s_uuid.bytes, key, param]), ret_type)
     
     def resolve(self, name : bytes, ret_type = KVP_RET_AWAIT):
-        unpacker = lambda v: uuid.UUID(bytes=v)
-
-        return self.__transop(bytes([TRANSACT_RESOLVE]) + segmented_bytearray.encode([name]), ret_type, unpack_value=unpacker)
+        return self.__transop(bytes([TRANSACT_RESOLVE]) + segmented_bytearray.encode([name]), ret_type, unpack_value=lambda v: uuid.UUID(bytes=v))
     
-    def _get_subsystem(self, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        unpacker = lambda v: RemoteSubsystemHandle(self, SubsystemInfo.decode(v), self.__subsystem_handles[s_uuid])
+    def get_subsystem(self, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        def unpack(v):
+            return RemoteSubsystemHandle(self, SubsystemInfo.decode(v), self.__subsystem_handles[s_uuid])
 
-        return self.__transop(bytes([TRANSACT_GET_SUBSYSTEM]) + segmented_bytearray.encode([t_uuid.bytes]), ret_type, unpack_value=unpacker)
+        return self.__transop(bytes([TRANSACT_GET_SUBSYSTEM]) + segmented_bytearray.encode([t_uuid.bytes]), ret_type, unpack_value=unpack)
     
     def __send_subsystem_infos(self):
         for s in self.__subsystem_info:
-            self._send_subsystem_info(s)
+            self.send_subsystem_info(s)
     
-    def _send_subsystem_info(self, info):
+    def send_subsystem_info(self, info):
         self.__transactions.send_transaction(bytes([TRANSACT_REG_SUBSYSTEM]) + info.encode()).then(self.__transact_status_change)
 
     def __refresh_subscriptions(self):
@@ -1229,7 +1244,7 @@ class DDSClient:
     def get_registered(self):
         return self.__registered
     
-    def _get_system(self, subsystem : "DDSClient._RegisteredSubsystem"):
+    def get_system(self, subsystem : "DDSClient._RegisteredSubsystem"):
         handles = []
         for info in self.__cached_subsystems:
             handles.append(RemoteSubsystemHandle(self, info, subsystem))
