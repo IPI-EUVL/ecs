@@ -76,9 +76,7 @@ class QueryOptions:
 
         min_level_num = None
         if self.min_level is not None:
-            if not self.l_type:
-                raise ValueError("--min-level requires --type (ordering is type-specific)")
-            min_level_num = DEFAULT_LEVEL_MAP.get(self.l_type, {}).get(self.min_level, 0)
+            min_level_num = DEFAULT_LEVEL_MAP.get(self.min_level, 0)
 
         return dict(
             line_min=self.line_from,
