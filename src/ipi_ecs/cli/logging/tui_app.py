@@ -48,8 +48,9 @@ except Exception:  # pragma: no cover
             encoding="utf-8",
         )
 
+MAX_W = 170
 
-def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix: Text | None = None) -> Text:
+def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix: Text | None = None, screen_width = MAX_W) -> Text:
     rec = ln.record
     origin = rec.get("origin", {}) or {}
     ts_ns = origin.get("ts_ns")
@@ -81,30 +82,32 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix
     t.append(f"{subsystem}: ", style=RICH_STYLE.get("info", "") or "cyan")
 
     # Message (highlight warnings/errors)
+
+    if len(t) + len(msg) > screen_width - 5:
+        msg = msg[:screen_width - (len(t) + 5)] + "..."
+    
     t.append(msg, style=sev_style if token in {"error", "warn"} else "")
 
     return t
 
-def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, gutter_width: int = 18, max_cols: int = 30, sep: int = 3) -> dict[int, Text]:
+def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str, str | None, str | None]] | None, *, gutter_width: int = 18, max_cols: int = 30, sep: int = 3) -> dict[int, Text]:
     """Build per-visible-line prefix Text for a left gutter showing event ranges."""
     if not ranges or not rows:
         return {}
 
     # normalize
     norm: list[tuple[int, int, str]] = []
-    for a, b, label in ranges:
-        try:
-            a_i = int(a)
+    for a, b, label, style_gutter, style_label in ranges:
+        a_i = int(a)
 
-            if b is None:
-                b_i = rows[-1].line
-            else:
-                b_i = int(b)
-        except Exception:
-            raise
+        if b is None:
+            b_i = rows[-1].line
+        else:
+            b_i = int(b)
+
         if b_i < a_i:
             a_i, b_i = b_i, a_i
-        norm.append((a_i, b_i, str(label), b))
+        norm.append((a_i, b_i, str(label), b, style_gutter, style_label))
     ranges_n = norm[: max(1, int(max_cols))]
     visible = [int(r.line) for r in rows]
     if not visible:
@@ -115,7 +118,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
     # pick a label line for each range (closest visible line to midpoint)
     label_line_for: dict[tuple[int, int, str], int] = {}
     for rng in ranges_n:
-        s, e, lbl, end = rng
+        s, e, lbl, end, style_gutter, style_label = rng
         if s == e:
             label_line_for[rng] = s
             continue
@@ -131,13 +134,13 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
     ranges_n.sort(key=lambda v: abs(v[0]-v[1]))
     ranges_n.reverse()
 
-    for i in range(len(ranges_n)):
+    for i in range(len(ranges_n)): #pylint: disable=consider-using-enumerate
         rng_a = ranges_n[i]
         max_overlap[i] = 0
-        s, e, lbl, end = rng_a
-        for j in range(len(ranges_n)):
+        s, e, lbl, end, style_gutter, style_label = rng_a
+        for j in range(len(ranges_n)): #pylint: disable=consider-using-enumerate
             rng_b = ranges_n[j]
-            s2, e2, lbl2, end = rng_b
+            s2, e2, lbl2, end, style_gutter, style_label = rng_b
             if i <= j:
                 break
 
@@ -147,10 +150,10 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
     ranges_of_interest = dict()
     for ln in visible:
         ranges_of_interest[ln] = []
-        for i in range(len(ranges_n)):
+        for i in range(len(ranges_n)): #pylint: disable=consider-using-enumerate
             rng = ranges_n[i]
             
-            s, e, lbl, end = rng
+            s, e, lbl, end, style_gutter, style_label = rng
             if not (s <= ln <= e):
                 continue
 
@@ -168,13 +171,13 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
         cols: list[str] = []
         glyphs = ""
         ranges_line = ranges_of_interest[ln]
-        for i in range(len(ranges_line)):
+        for i in range(len(ranges_line)): #pylint: disable=consider-using-enumerate
             rng = ranges_line[i]
 
             if rng is None: 
                 glyph = (" " * sep)
             else:
-                s, e, lbl, end = rng
+                s, e, lbl, end, style_gutter, style_label = rng
                 if rng is None or not (s <= ln <= e):
                     glyph = (" " * sep)
 
@@ -191,17 +194,17 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str]] | None, *, 
             glyphs += glyph.ljust(sep)
 
             if len(glyphs) > max_lbl and not glyphs.isspace():
-                    glyphs = glyphs[: max(0, max_lbl - 1)] + "…"
+                glyphs = glyphs[: max(0, max_lbl - 1)] + "…"
         glyphs_text = Text(glyphs.ljust(w), style="dim")
 
         text = None
-        for i in range(len(ranges_line)):
+        for i in range(len(ranges_line)): #pylint: disable=consider-using-enumerate
             rng = ranges_line[i]
 
             if rng is None:
                 continue
 
-            s, e, lbl, end = rng
+            s, e, lbl, end, style_gutter, style_label = rng
 
             if label_line_for.get(rng) == ln:
                 clean = lbl.replace("\n", " ").strip()
@@ -428,7 +431,6 @@ def run_tui(
             # Optional range gutter: list[(start_line, end_line, label)]
             self.ranges: list[tuple[int, int, str]] = [(0, 25, "mylabel"), (5, 35, "my other label"), (10, 45, "my other label")]
 
-
         def set_ranges(self, ranges: list[tuple[int, int, str]] | None) -> None:
             """Set the range gutter spans. Call with None or [] to clear."""
             self.ranges = ranges or []
@@ -446,7 +448,7 @@ def run_tui(
 
             out = Text()
             for i, ln in enumerate(self.rows):
-                line = _format_logline_rich(ln, show_uuids=self._show_uuids, hide_uuids=self._hide_uuids, range_prefix=(prefix_map.get(int(ln.line), blank_prefix) if blank_prefix is not None and self.__show_gutter else None))
+                line = _format_logline_rich(ln, show_uuids=self._show_uuids, hide_uuids=self._hide_uuids, range_prefix=(prefix_map.get(int(ln.line), blank_prefix) if blank_prefix is not None and self.__show_gutter else None), screen_width=self.size.width)
                 if i == self.cursor:
                     line = _highlight_line(line)
                 out.append_text(line)
@@ -471,7 +473,6 @@ def run_tui(
         def toggle_gutter(self):
             self.__show_gutter = not self.__show_gutter
             self.refresh()
-
 
     class LogTUI(App):
         TITLE = "ipi-ecs log tui"
@@ -697,7 +698,7 @@ def run_tui(
                 if prev_id and str(ev.event_id) == str(prev_id):
                     sel_index = i
 
-                ranges.append((ev.start_line, ev.end_line, ev.message))
+                ranges.append((ev.start_line, ev.end_line, ev.message, "", ""))
 
             self.query_one("#log", LogPane).set_ranges(ranges)                
             if sel_index is not None:
