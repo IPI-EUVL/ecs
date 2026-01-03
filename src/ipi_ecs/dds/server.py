@@ -14,7 +14,7 @@ from ipi_ecs.dds.magics import *
 
 ENV_DDS_PORT = "IPI_ECS_DDS_PORT"
 
-class DDSServer:
+class _DDSServer:
     __E_ON_CLIENT_CONNECT = 0
     __E_ON_CLIENT_DISCONNECT = 1
 
@@ -25,7 +25,7 @@ class DDSServer:
         __E_TRANSACT_DATA_AVAIL = 3
         __E_NEW_TRANSACT = 4
 
-        def __init__(self, sock: tcp.TCPServerSocket, server: "DDSServer"):
+        def __init__(self, sock: tcp.TCPServerSocket, server: "_DDSServer"):
             self.__socket = sock
             self.__server = server
 
@@ -320,8 +320,20 @@ class DDSServer:
         def _on_event_return(self, e_uuid: uuid.UUID, s_uuid: uuid.UUID, status: int, value: bytes):
             self.__client.send(bytes([MAGIC_EVENT_RET]) + segmented_bytearray.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, status.to_bytes(length=1, byteorder="big"), value]))
 
+    class ServerHandle:
+        def __init__(self, server: "_DDSServer"):
+            self.__server = server
+
+        def start(self):
+            self.__server.start()
+
+        def close(self):
+            self.__server.close()
+
+        def ok(self):
+            return self.__server.ok()
         
-    def __init__(self, host = "0.0.0.0", port = None):
+    def __init__(self, host = "0.0.0.0", port = None, logger : LogClient | None = None):
         self.__client_queue = queue.Queue()
         
         if port is None:
@@ -330,7 +342,11 @@ class DDSServer:
         if port is None:
             port = SERVER_PORT
         
+        self.__logger = logger
+
         self.__server = tcp.TCPServer((host, port), self.__client_queue)
+        
+        self.__log(f"Binding {host}:{port}", level="DEBUG")
 
         self.__clients = []
 
@@ -362,8 +378,8 @@ class DDSServer:
     def __disconnected_client(self):
         for client in self.__clients:
             if client.closed():
-                #if not client.is_shutdown():
-                #    print("Client has abruptly disconnected: ", client.get_uuid())
+                if not client.is_shutdown():
+                    self.__log(f"Client {client.get_uuid()} has abruptly closed the connection", level="WARN", event="CONN")
                 
                 #print("Removing: ", client.get_uuid())
                 self.__clients.remove(client)
@@ -380,7 +396,8 @@ class DDSServer:
 
                     for s in self.__subsystems.values():
                         if s.get_client_uuid() == client.get_uuid():
-                            #print("Subsystem ", s.get_uuid(), " has lost connection")
+                            self.__log(f"Subsystem {s.get_uuid()} has disconnected", level="INFO", event="CONN")
+
                             s.bind_client(None, s.get_info())
 
                             if s.get_info().get_temporary():
@@ -403,7 +420,9 @@ class DDSServer:
             if e == self.__E_ON_CLIENT_DISCONNECT:
                 self.__disconnected_client()
 
-    def _got_client_uuid(self, client : "DDSServer._ClientConnection"):
+    def got_client_uuid(self, client : "_DDSServer._ClientConnection"):
+        self.__log(f"Client {client.get_uuid()} has connected", level="DEBUG", event="CONN")
+
         self.__clients_uuid[client.get_uuid()] = client
 
     def _register_subsystem(self, c_uuid : uuid.UUID, s_info : SubsystemInfo):
@@ -418,6 +437,7 @@ class DDSServer:
                     self._subscribe(r_uuid, s_uuid, key)
                     self.__pending_subscribers.remove((r_uuid, s_uuid, key))
 
+            self.__log(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})", level="INFO")
             #print(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})")
 
             #if s_info.get_temporary():
@@ -427,8 +447,8 @@ class DDSServer:
         ok = subsystem.bind_client(self.__clients_uuid[c_uuid], s_info)
 
         self._send_subsystems()
-        #if ok:
-        #    print(f"Bound subsystem: {s_info.get_name()}({s_info.get_uuid()}) to client {c_uuid}")
+        if ok:
+            self.__log(f"Bound subsystem: {s_info.get_name()}({s_info.get_uuid()}) to client {c_uuid}", level="DEBUG")
 
         return ok
     
@@ -492,13 +512,15 @@ class DDSServer:
     def _event_returned(self, s_uuid: uuid.UUID, e_uuid: uuid.UUID, state: int, value: bytes):
         e = self.__in_progress_events.get(e_uuid)
         if e is None:
-            print("Received event return for event that does not exist?!")
+            self.__log("Received event return for event that does not exist!", level="ERROR")
+            return
         
         name, r_uuid = e
         s = self.find_subsystem(uuid=r_uuid)
 
         if s is None:
-            print("Received event return for event sent by subsystem that does not exist?!")
+            self.__log("Received event return for event sent by subsystem that does not exist!", level="ERROR")
+            return
         
         s._on_event_return(e_uuid, s_uuid, state, value)
 
@@ -510,7 +532,7 @@ class DDSServer:
         r = self.__clients_uuid.get(r_uuid)
 
         if r is None:
-            #print(f"Target receiver {r_uuid} to add subscriber not found, who are you?!")
+            self.__log(f"Target receiver {r_uuid} to add subscriber not found, who are you?!", level="ERROR")
             return
 
         if s is None:
@@ -540,5 +562,15 @@ class DDSServer:
                     return s
             return None
         
-        if uuid is not None:
-            return self.__subsystems.get(uuid)
+        if s_uuid is not None:
+            return self.__subsystems.get(s_uuid)
+        
+    def __log(self, msg, level = "INFO", **data):
+        if self.__logger is None:
+            print(level, msg)
+            return
+        
+        self.__logger.log(msg, level=level, l_type="SW", subsystem="DDS Server", **data)
+
+def get_server(host, port, logger = None):
+    return _DDSServer.ServerHandle(_DDSServer(host, port, logger))

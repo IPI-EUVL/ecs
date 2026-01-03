@@ -295,14 +295,14 @@ class _EventHandler:
         try:
             v = self.__r_type.encode(value)
         except ValueError:
-            print("Received invalid data from handler function!")
+            self.__subsystem.log("Received invalid data from handler function!", level="ERROR")
             return (TRANSOP_STATE_REJ, b"Internal error, handler returned invalid data!")
 
         self.__subsystem.send_event_return(e_uuid, state, v)
         
         
     def get_name(self):
-        return self.__key
+        return self.__name
     
     def set_types(self, p_type : PropertyTypeSpecifier, r_type : PropertyTypeSpecifier):
         self.__p_type = p_type
@@ -361,7 +361,7 @@ class _EventProvider:
         return h.get_handle()
         
     def get_name(self):
-        return self.__key
+        return self.__name
     
     def set_types(self, p_type : PropertyTypeSpecifier, r_type : PropertyTypeSpecifier):
         self.__p_type = p_type
@@ -690,7 +690,7 @@ class DDSClient:
     REG_STATE_NOT_REGISTERED = 2
 
     class _RegisteredSubsystem:
-        def __init__(self, info: "SubsystemInfo", client: "DDSClient"):
+        def __init__(self, info: "SubsystemInfo", client: "DDSClient", logger = None):
             self.__info = info
             self.__client = client
 
@@ -700,6 +700,11 @@ class DDSClient:
 
             self.__in_progress_events = dict()
             self.__incoming_events = dict()
+
+            self.__logger = logger
+
+            self.log(f"Registered subsystem: {self.get_info().get_name()}", level="DEBUG")
+
 
         def get_info(self):
             return self.__info
@@ -822,7 +827,7 @@ class DDSClient:
             e = self.__in_progress_events.get(e_uuid)
 
             if e is None:
-                print("Received event return that this subsystem did not send!")
+                self.log("Received event return for an event that this subsystem did not send!", level="ERROR")
                 return
             
             e.set_result(r_uuid, status, ret_value)
@@ -833,13 +838,21 @@ class DDSClient:
 
 
             if t is None:
-                print("Received request to send event return for an event that this subsystem did not receive!")
+                self.log("Received request to send event return for an event that this subsystem did not receive", level="ERROR")
                 return
             
             t.ret(bytes([state]) + v)
 
-    def __init__(self, c_uuid : uuid.UUID, ip = "127.0.0.1"):
+        def log(self, msg, level = "INFO", **data):
+            if self.__logger is None:
+                print(level, msg)
+                return
+            
+            self.__logger.log(msg, level=level, l_type="SW", subsystem=self.get_info().get_name(), **data)
+
+    def __init__(self, c_uuid : uuid.UUID, ip = "127.0.0.1", logger = None):
         self.__uuid = c_uuid
+        self.__logger = logger
 
         self.__socket = tcp.TCPClientSocket()
         self.__socket.connect((ip, SERVER_PORT))
@@ -923,7 +936,7 @@ class DDSClient:
 
                 s = self.__subsystem_handles.get(s_uuid)
                 if s is None:
-                    print("Received event return for event that originated from nonexistent subsystem!")
+                    self.__log("Received event return for event from subsystem not registered with this client", level="ERROR")
                     return
                 #print(s, status, ret_value)
                 s.on_event_return(e_uuid, r_uuid, status, ret_value)
@@ -951,6 +964,7 @@ class DDSClient:
             s_uuid, r_uuid, key = segmented_bytearray.decode(t.get_data()[1:])
             s = self.__subsystem_handles.get(uuid.UUID(bytes=s_uuid))
             if s is None:
+                self.__log("Received request to get KV descriptor for subsystem not registered with this client", level="ERROR")
                 t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
                 return
 
@@ -968,6 +982,7 @@ class DDSClient:
 
             s = self.__subsystem_handles.get(s_uuid)
             if s is None:
+                self.__log("Received request to call event for subsystem not registered with this client", level="ERROR")
                 t.ret(bytes([EVENT_REJ]) + b"Specified subsystem not found.")
                 return
             
@@ -982,6 +997,7 @@ class DDSClient:
         s_uuid = uuid.UUID(bytes=s_uuid)
 
         if self.__subsystem_handles.get(t_uuid) is None:
+            self.__log("Received request to get kv for subsystem not registered with this client", level="ERROR")
             t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
             return
 
@@ -1001,6 +1017,7 @@ class DDSClient:
         s_uuid = uuid.UUID(bytes=s_uuid)
 
         if self.__subsystem_handles.get(t_uuid) is None:
+            self.__log("Received request to set kv for subsystem not registered with this client", level="ERROR")
             t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
             return
 
@@ -1079,7 +1096,8 @@ class DDSClient:
             
             self.__registered = self.REG_STATE_OK
 
-            subsystem_handle = self._RegisteredSubsystem(info, self)
+            subsystem_handle = self._RegisteredSubsystem(info, self, self.__logger)
+            self.__log(f"Registered subsystem: {subsystem_handle.get_info().get_name()}", level="DEBUG")
             #print("Registered subsystem: ", subsystem_handle.get_info().get_name())
 
             self.__subsystem_handles[subsystem_handle.get_info().get_uuid()] = subsystem_handle
@@ -1130,7 +1148,7 @@ class DDSClient:
 
     def __on_transop_returned_await(self, awaiter : mt_events.Awaiter, unpack_value, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            #print("Transop NAK'd!!")
+            self.__log("TRANSOP transaction has been NAK'd", level="ERROR")
             awaiter.call(state=TRANSOP_STATE_REJ, reason=None)
             return
 
@@ -1149,7 +1167,7 @@ class DDSClient:
     
     def __on_transop_returned_handle(self, op_handle : "DDSClient.__TransOpHandle", unpack_value, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-            #print("Transop NAK'd!!")
+            self.__log("TRANSOP transaction has been NAK'd", level="ERROR")
             op_handle.set_state(TRANSOP_STATE_REJ)
             return
 
@@ -1220,4 +1238,11 @@ class DDSClient:
     
     def on_remote_system_update(self, c: mt_events.EventConsumer, e):
         self.__remote_subsystem_update_event.bind(c, e)
+
+    def __log(self, msg, level = "INFO", **data):
+        if self.__logger is None:
+            print(level, msg)
+            return
+        
+        self.__logger.log(msg, level=level, l_type="SW", **data)
 

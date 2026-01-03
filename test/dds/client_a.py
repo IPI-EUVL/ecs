@@ -6,6 +6,9 @@ import ipi_ecs.dds.subsystem as subsystem
 import ipi_ecs.dds.types as types
 import ipi_ecs.dds.client as client
 import ipi_ecs.dds.magics as magics
+import ipi_ecs.core.tcp as tcp
+
+from ipi_ecs.logging.client import LogClient
 
 p = None
 e_p = None
@@ -23,6 +26,7 @@ def handle_get(requester):
 def handle_event(s_uuid, param, handle: client._EventHandler.IncomingEventHandle):
     global rec_event_handle
     print("called event handle", param)
+    print("sender is", s_uuid)
     rec_event_handle = handle
     #handle.ret(b"MY BALUE")
 
@@ -49,7 +53,16 @@ def setup_subsystem(handle: client.RegisteredSubsystemHandle):
     p.set_type(t)
     p.value = 0
 
-m_client = client.DDSClient(uuid.uuid4())
+c_uuid = uuid.uuid4()
+
+sock = tcp.TCPClientSocket()
+
+sock.connect(("127.0.0.1", 11751))
+sock.start()
+
+logger = LogClient(sock, origin_uuid=c_uuid)
+
+m_client = client.DDSClient(c_uuid, logger=logger)
 m_client.register_subsystem("my subsystem", uuid.uuid3(uuid.NAMESPACE_OID, "1")).then(setup_subsystem)
 time.sleep(0.5)
 
