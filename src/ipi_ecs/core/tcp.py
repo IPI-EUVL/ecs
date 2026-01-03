@@ -10,7 +10,7 @@ import ipi_ecs.core.mt_events as mt_events
 SOCKET_BUFSIZE = 1024
 DELIM = bytes([0x00])
 ESCAPE = bytes([0xff, 0x01])
-CLOSE = bytes([0x01])
+CLOSE = bytes([0x03])
 CLOSE_R = bytes([0x02])
 
 def escape_bytes(b : bytes):
@@ -199,7 +199,7 @@ class TCPSocket:
                 #print("Received shutdown request")
                 self._shutdown()
                 continue
-            if unescape_bytes(data) == CLOSE:
+            if data == CLOSE:
                 #print("Received shutdown request")
                 self._shutdown()
                 continue
@@ -211,7 +211,9 @@ class TCPSocket:
         self.__buffer += data
         
         while True:
+            #print(self.__buffer)
             chk, self.__buffer = sliced(self.__buffer)
+            #print(chk, self.__buffer)
             #print("split", chk, self.__buffer)
 
             if chk is not None:
@@ -269,7 +271,8 @@ class TCPSocket:
         Args:
             data (bytes): Data to send
         """
-
+        #print("to send: ", data)
+        #print("encoded send: ", escape_bytes(data))
         self._send_queue.put(escape_bytes(data) + bytes(DELIM))
 
     def get(self, timeout=None, block=True) -> bytes:
