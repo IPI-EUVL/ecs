@@ -101,7 +101,7 @@ Events are routed control actions:
 - Asynchronous, with state feedback
 - Can be used as a query system as well:
     - i.e. Controller subsystem sends global event "can begin exposure"
-    - If a subsystem objects, it can either reject the event, or send a "False" value
+    - If a subsystem objects, it can reject the event and provide a reason alongside as well if desired.
 
 ---
 
