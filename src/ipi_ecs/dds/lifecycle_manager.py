@@ -71,6 +71,8 @@ class SubsystemRuntimeState:
         ret_str += f"Managed: {self.managed}\n"
         ret_str += f"Started: {self.started}\n"
 
+        return ret_str
+
 class SubsystemRuntimeStatesType(types.PropertyTypeSpecifier):
     def __init__(self):
         pass
@@ -92,7 +94,6 @@ class LifecycleManager:
     DC_TIMEOUT = 10.0
 
     def __init__(self, s_uuid):
-        self.__run = True
         self.__s_uuid = s_uuid
 
         self.__logger_sock = tcp.TCPClientSocket()
@@ -556,6 +557,8 @@ class LifecycleManager:
 
         if s is None:
             return None
+        
+        return s_uuid
 
     def __start_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         s_uuid = self.__get_subsystem_uuid(param)
