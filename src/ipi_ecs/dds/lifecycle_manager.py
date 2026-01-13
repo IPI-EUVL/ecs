@@ -1,7 +1,5 @@
 import time
 import uuid
-import sys
-import argparse
 import multiprocessing
 import traceback
 
@@ -16,11 +14,8 @@ import ipi_ecs.core.tcp as tcp
 import ipi_ecs.core.daemon as daemon
 import ipi_ecs.dds.subsystem as subsystem
 import ipi_ecs.dds.types as types
-import ipi_ecs.dds.magics as magics
 
 from ipi_ecs.logging.client import LogClient
-from chamber_ctl.subsystems import exposure_controller
-
 
 class SubsystemRuntimeState:
     started = False
@@ -670,32 +665,3 @@ class LifecycleManager:
             d_bytes.append(segment_bytes.encode([s_uuid.bytes, s.encode()]))
 
         return segment_bytes.encode(d_bytes)
-
-
-def main(args: argparse.Namespace):
-    m_client = LifecycleManager(uuid.uuid3(uuid.NAMESPACE_OID, "lifecycle_manager"))
-    m_client.add_subsystem(
-        uuid.uuid3(uuid.NAMESPACE_OID, "1"), exposure_controller.main
-    )
-
-    try:
-        while m_client.ok():
-            time.sleep(1)
-            states = m_client.get_states()
-            if states is None:
-                print("Could not get states.")
-                continue
-
-            for s_uuid, state in states.items():
-                
-                print()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        m_client.close()
-
-    return 0
-
-
-if __name__ == "__main__":
-    main(None)
