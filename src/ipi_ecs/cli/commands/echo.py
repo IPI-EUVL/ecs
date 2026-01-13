@@ -93,7 +93,6 @@ class EchoClient:
         return self.__remote_kv.is_cached() if self.__remote_kv is not None else True
 
 def main(args: argparse.Namespace):
-    print(args.name, args.sys, args.key)
     m_client = EchoClient(args.name, args.sys, args.key)
 
     m_awaiter = mt_events.EventConsumer()
@@ -102,7 +101,6 @@ def main(args: argparse.Namespace):
 
     try:
         while m_client.ok():
-            m_client.print_sys_data()
             if m_client.is_cached():
                 if hz is not None and m_client.get_value() is not None:
                     print("--hz set, but property is published. Values will be displayed whenever the originator sends them regardless of desired rate.")

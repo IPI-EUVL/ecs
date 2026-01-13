@@ -99,7 +99,6 @@ def reg_s():
     if s is not None:
         return
     
-    print("REGISTER EEJEJE")
     s = m_client.register_subsystem("my subsystem", uuid.uuid3(uuid.NAMESPACE_OID, "1"))
     setup_subsystem(s)
 
