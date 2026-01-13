@@ -93,63 +93,30 @@ class QueryOptions:
             limit=self.limit,
         )
 
-RICH_STYLE: dict[str, str] = {
-    "error": "bold red",
-    "warn": "yellow",
-    "info": "cyan",
-    "debug": "dim",
-    "exp_hi": "bold green",
-    "exp": "green",
-    "exp_low": "white",
+RICH_TYPE_STYLE: dict[str, str] = {
+    "ERROR": "bold red blink",
+    "WARN": "yellow",
+    "INFO": "cyan",
+    "DEBUG": "dim",
+    "rec": "dim",
+    "default": "",
+
+    "subsystem": "cyan"
+}
+
+RICH_MESSAGE_STYLE: dict[str, str] = {
+    "ERROR": "bold red",
+    "WARN": "yellow",
+    "INFO": "",
+    "DEBUG": "dim",
     "rec": "dim",
     "default": "",
 }
 
-def get_format_color(l_type: str | None, level: str | None) -> str:
-    """
-    Return a stable style token for a log line based on l_type/level.
-
-    This token is intentionally frontend-agnostic; map it to prompt_toolkit/Rich styles.
-    """
-    lt = (l_type or "").upper()
-    lv = (level or "").upper()
-
-    # Noisy telemetry: keep muted if shown.
-    if lt == "REC":
-        return "rec"
-
-    # Software/system messages
-    if lt == "SOFTW":
-        if lv in {"CRITICAL", "FATAL", "ERROR"}:
-            return "error"
-        if lv in {"WARN", "WARNING"}:
-            return "warn"
-        if lv in {"INFO"}:
-            return "info"
-        return "debug"
-
-    # Experiment journal
-    if lt == "EXP":
-        if lv in {"MILESTONE", "IMPORTANT", "MAJOR"}:
-            return "exp_hi"
-        if lv in {"STEP", "ACTION"}:
-            return "exp"
-        return "exp_low"
-
-    # Fallback: color by common severity strings even if type is unknown
-    if lv in {"CRITICAL", "FATAL", "ERROR"}:
-        return "error"
-    if lv in {"WARN", "WARNING"}:
-        return "warn"
-    if lv in {"INFO"}:
-        return "info"
-
-    return "default"
-
 
 # prompt_toolkit Style.from_dict() keys (used as "class:log.error", etc.)
 PT_STYLE: dict[str, str] = {
-    "log.error": "fg:#ff4444 bold",
+    "log.error": "fg:#ff4444 bold blink",
     "log.warn": "fg:#ffaa00",
     "log.info": "fg:#44bbff",
     "log.debug": "fg:#777777",

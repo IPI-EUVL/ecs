@@ -1,7 +1,6 @@
 import queue
 import uuid
-
-import ipi_ecs.core.mt_events as mt_events
+import mt_events
 
 MAGIC_NEW_TRANS = 0x00
 MAGIC_ACK_TRANS = 0x01
@@ -99,8 +98,8 @@ class TransactionManager:
             
             return self.STATE_NAK
         
-        def on_state_change(self, event_c : mt_events.EventConsumer, event_id):
-            self.__event_state_change.bind(event_c, event_id)
+        def on_state_change(self):
+            return self.__event_state_change
 
         def then(self, fn, pargs = [], kwargs = dict()):
             self.__cb_fn = fn
@@ -114,7 +113,6 @@ class TransactionManager:
                 self.__cb_fn(*self.__cb_pargs, **self.__cb_kwargs)
 
     class OutgoingTransactionHandle:
-        E_STATE_CHANGE = 0
         STATE_PENDING = 0
         STATE_ACK = 1
         STATE_NAK = 2
@@ -217,8 +215,8 @@ class TransactionManager:
     def get_incoming(self, block = True, timeout = 1.0) -> "TransactionManager.IncomingTransactionHandle":
         return self.__recv_trans_queue.get(block=block, timeout=timeout)
 
-    def on_receive_transaction(self, event_c : mt_events.EventConsumer, event_id):
-        self.__on_recv_trans.bind(event_c, event_id)
+    def on_receive_transaction(self):
+        return self.__on_recv_trans
 
-    def on_send_data(self, event_c : mt_events.EventConsumer, event_id):
-        self.__on_send_data.bind(event_c, event_id)
+    def on_send_data(self):
+        return self.__on_send_data

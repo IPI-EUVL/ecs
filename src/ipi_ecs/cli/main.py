@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from ipi_ecs.logging.logger_server import run_logger_server
-from ipi_ecs.logging.viewer import LogViewer, QueryOptions, format_line, get_format_color, PT_STYLE, RICH_STYLE, get_subsystem, resolve_log_dir
+from ipi_ecs.logging.viewer import LogViewer, QueryOptions, format_line, PT_STYLE, RICH_TYPE_STYLE, RICH_MESSAGE_STYLE, get_subsystem, resolve_log_dir
 from ipi_ecs.logging.timefmt import fmt_ns_local
 from ipi_ecs.logging.reader import JournalReader
 
@@ -83,8 +83,7 @@ def print_log_line_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> None:
 
     subsystem = get_subsystem(rec)
 
-    token = get_format_color(l_type, level)
-    sev_style = RICH_STYLE.get(token, "")
+    sev_style = RICH_TYPE_STYLE.get(level, "")
 
     t = Text()
     t.append(f"{ln.line:>10}  ", style="dim")
@@ -95,7 +94,7 @@ def print_log_line_rich(ln, *, show_uuids: bool, hide_uuids: bool) -> None:
         t.append(f"{uuid} ", style="magenta")
 
     t.append(f"{subsystem}: ", style="cyan" if subsystem != "(no subsystem)" else "magenta")
-    t.append(msg, style=sev_style if token in {"error", "warn"} else "")
+    t.append(msg, style=RICH_MESSAGE_STYLE.get(level, ""))
 
     _RICH_CONSOLE.print(t)
 
@@ -284,8 +283,7 @@ def cmd_log_browse(args: argparse.Namespace) -> int:
         #print(rec)
         #print(s)
 
-        token = get_format_color(l_type, level)
-        sev_style = f"class:log.{token}"
+        sev_style = f"class:log.{level}"
 
         out: list[tuple[str, str]] = []
         out.append(("class:log.lineno", f"{x.line:>10} "))
@@ -296,7 +294,7 @@ def cmd_log_browse(args: argparse.Namespace) -> int:
             out.append(("class:log.uuid", f"{ou} "))
 
         out.append(("class:log.subsystem" if s != "(no subsystem)" else "class:log.uuid", f"{s}: "))
-        out.append((sev_style if token in {"error", "warn"} else "", msg))
+        out.append((RICH_MESSAGE_STYLE.get(level, ""), msg))
         out.append(("", "\n"))
         return out
 

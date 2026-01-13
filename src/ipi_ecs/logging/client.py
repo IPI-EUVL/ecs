@@ -32,6 +32,7 @@ class LogClient:
         l_type: str = "SW",
         event: str | None = None,
         origin_ts_ns: int | None = None,
+        origin_uuid: uuid.UUID | None = None,
         **data: Any,
     ) -> None:
         """
@@ -54,7 +55,7 @@ class LogClient:
         record: dict[str, Any] = {
             "v": 1,  # record schema version
             "origin": {
-                "uuid": str(self._origin_uuid),
+                "uuid": origin_uuid if origin_uuid is not None else str(self._origin_uuid),
                 "ts_ns": origin_ts_ns if origin_ts_ns is not None else time.time_ns(),
             },
             "seq": self._seq,

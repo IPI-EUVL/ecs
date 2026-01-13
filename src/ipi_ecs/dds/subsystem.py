@@ -1,10 +1,12 @@
 import uuid
+import segment_bytes
 
-import ipi_ecs.core.segmented_bytearray as segmented_bytearray
 import ipi_ecs.dds.types as types
 
+# pylint: disable=unbalanced-tuple-unpacking
+
 class SubsystemInfo:
-    def __init__(self, s_uuid: uuid.UUID, name : str, temporary = False, kv_infos = segmented_bytearray.encode([]), events = segmented_bytearray.encode([])):
+    def __init__(self, s_uuid: uuid.UUID, name : str, temporary = False, kv_infos = segment_bytes.encode([]), events = segment_bytes.encode([])):
         self.__uuid = s_uuid
         self.__name = name
         self.__temporary = temporary
@@ -21,7 +23,7 @@ class SubsystemInfo:
         return self.__temporary
     
     def get_kvs(self):
-        kv_sep = segmented_bytearray.decode(self.__kv_infos)
+        kv_sep = segment_bytes.decode(self.__kv_infos)
         descs = []
 
         for kv_desc in kv_sep:
@@ -33,23 +35,24 @@ class SubsystemInfo:
         if len(self.__events) == 0:
             return ([], [])
         
-        b_providers, b_handlers = segmented_bytearray.decode(self.__events)
+        b_providers, b_handlers = segment_bytes.decode(self.__events)
         providers = []
         handlers = []
 
-        for desc in segmented_bytearray.decode(b_providers):
+        for desc in segment_bytes.decode(b_providers):
             providers.append(EventDescriptor.decode(desc))
 
-        for desc in segmented_bytearray.decode(b_handlers):
+        for desc in segment_bytes.decode(b_handlers):
             handlers.append(EventDescriptor.decode(desc))
 
         return (providers, handlers)
     
     def encode(self):
-        return segmented_bytearray.encode([self.__uuid.bytes, self.__name.encode("utf-8"), self.__temporary.to_bytes(length=1, byteorder="big"), self.__kv_infos, self.__events])
+        return segment_bytes.encode([self.__uuid.bytes, self.__name.encode("utf-8"), self.__temporary.to_bytes(length=1, byteorder="big"), self.__kv_infos, self.__events])
     
+    @staticmethod
     def decode(d_bytes : bytes):
-        b_s_uuid, b_name, b_temporary, b_kv, b_events = segmented_bytearray.decode(d_bytes)
+        b_s_uuid, b_name, b_temporary, b_kv, b_events = segment_bytes.decode(d_bytes)
         s_uuid = uuid.UUID(bytes=b_s_uuid)
         name = b_name.decode("utf-8")
         temporary = bool.from_bytes(b_temporary, "big")
@@ -81,10 +84,11 @@ class KVDescriptor:
         return self.__writable
     
     def encode(self):
-        return segmented_bytearray.encode([self.__p_type.encode_type(), self.__key, self.__published.to_bytes(length=1, byteorder="big"), self.__readable.to_bytes(length=1, byteorder="big"), self.__writable.to_bytes(length=1, byteorder="big")])
+        return segment_bytes.encode([types.encode(self.__p_type), self.__key, self.__published.to_bytes(length=1, byteorder="big"), self.__readable.to_bytes(length=1, byteorder="big"), self.__writable.to_bytes(length=1, byteorder="big")])
     
+    @staticmethod
     def decode(d_bytes : bytes):
-        b_type, key, b_pub, b_read, b_write = segmented_bytearray.decode(d_bytes)
+        b_type, key, b_pub, b_read, b_write = segment_bytes.decode(d_bytes)
         s_type = types.decode(b_type)
         s_pub = bool.from_bytes(b_pub, "big")
 
@@ -109,11 +113,75 @@ class EventDescriptor:
         return self.__name
     
     def encode(self):
-        return segmented_bytearray.encode([self.__p_type.encode_type(),self.__r_type.encode_type(), self.__name])
+        return segment_bytes.encode([types.encode(self.__p_type), types.encode(self.__r_type), self.__name])
     
+    @staticmethod
     def decode(d_bytes : bytes):
-        b_ptype, b_rtype, name = segmented_bytearray.decode(d_bytes)
+        b_ptype, b_rtype, name = segment_bytes.decode(d_bytes)
         s_ptype = types.decode(b_ptype)
         s_rtype = types.decode(b_rtype)
 
         return EventDescriptor(s_ptype, s_rtype, name)
+    
+class StatusItem:
+    STATE_INFO = 0
+    STATE_WARN = 1
+    STATE_ALARM = 2
+
+    def __init__(self, severity : int, code: int, message: str):
+        self.__severity = severity
+        self.__code = code
+        self.__message = message
+
+    def get_message(self):
+        return self.__message
+    
+    def get_severity(self):
+        return self.__severity
+    
+    def get_code(self):
+        return self.__code
+    
+    def encode(self):
+        return self.__severity.to_bytes(length=1, byteorder="big") + self.__code.to_bytes(length=1, byteorder="big") + self.__message.encode("utf-8")
+    
+    @staticmethod
+    def decode(b : bytes):
+        severity = int.from_bytes(bytes([b[0]]), byteorder="big")
+        code = int.from_bytes(bytes([b[1]]), byteorder="big")
+
+        message = b[2:].decode("utf-8")
+
+        return StatusItem(severity, code, message)
+    
+class SubsystemStatus:
+    STATE_ALIVE = 0
+    STATE_DISCONNECTED = 1
+
+    def __init__(self, status : int, status_items: list | None = None):
+        self.__status = status
+        self.__status_items = status_items if status_items is not None else []
+
+    def get_status(self):
+        return self.__status
+    
+    def get_status_items(self):
+        return self.__status_items
+    
+    def encode(self):
+        b_status = []
+        for s in self.__status_items:
+            b_status.append(s.encode())
+        
+        return self.__status.to_bytes(length=1, byteorder="big") + segment_bytes.encode(b_status)
+    
+    @staticmethod
+    def decode(b : bytes):
+        status = int.from_bytes(bytes([b[0]]), byteorder="big")
+        b_status_items = segment_bytes.decode(b[1:])
+        status_items = []
+
+        for b_status_item in b_status_items:
+            status_items.append(StatusItem.decode(b_status_item))
+        
+        return SubsystemStatus(status, status_items)

@@ -1,16 +1,27 @@
-import ipi_ecs.core.segmented_bytearray as segmented_bytearray
+import segment_bytes
 from ipi_ecs.dds.magics import *
 
-def encode(s : "PropertyTypeSpecifier"):
-    return s.encode_type()
+class TypeManager:
+    def __init__(self):
+        self.__identifiers = dict()
+        self.__types = dict()
+        self.__next_identifier = 0
 
-def decode(d : bytes):
-    if d[0] == TYPE_UNSPEC:
-        return PropertyTypeSpecifier.decode_type(d)
-    elif d[0] == TYPE_BYTES:
-        return ByteTypeSpecifier.decode_type(d)
-    elif d[0] == TYPE_INT:
-        return IntegerTypeSpecifier.decode_type(d)
+    def define_type(self, t_type):
+        if self.__identifiers.get(t_type) is not None:
+            return False
+        
+        self.__identifiers[t_type] = self.__next_identifier
+        self.__types[self.__next_identifier] = t_type
+        self.__next_identifier += 1
+
+        return True
+
+    def get_identifier(self, t_type) -> int:
+        return self.__identifiers.get(t_type)
+    
+    def get_type(self, identifier):
+        return self.__types.get(identifier)
 
 class PropertyTypeSpecifier:
     def parse(self, data : bytes):
@@ -18,9 +29,11 @@ class PropertyTypeSpecifier:
 
     def encode(self, data : any):
         return None
-    def encode_type(self):
-        return bytes([TYPE_UNSPEC])
     
+    def encode_type(self):
+        return bytes()
+    
+    @staticmethod
     def decode_type(data : bytes):
         return PropertyTypeSpecifier()
     
@@ -35,8 +48,9 @@ class ByteTypeSpecifier(PropertyTypeSpecifier):
         return bytes(data)
     
     def encode_type(self):
-        return bytes([TYPE_BYTES])
+        return bytes()
     
+    @staticmethod
     def decode_type(data : bytes):
         return ByteTypeSpecifier()
     
@@ -46,7 +60,7 @@ class IntegerTypeSpecifier(PropertyTypeSpecifier):
         self.__max = r_max
 
     def parse(self, data : bytes):
-        if len(data) != 4:
+        if len(data) != 8:
             raise ValueError()
         
         v = int.from_bytes(data, byteorder="big", signed=True)
@@ -60,18 +74,39 @@ class IntegerTypeSpecifier(PropertyTypeSpecifier):
         if (self.__max is not None and data > self.__max) or (self.__min is not None and data < self.__min):
             raise ValueError()
         
-        return data.to_bytes(byteorder="big", length=4, signed=True)
+        return data.to_bytes(byteorder="big", length=8, signed=True)
     
     def encode_type(self):
         if self.__min is not None:
-            return bytes([TYPE_INT]) + segmented_bytearray.encode([self.__min.to_bytes(length=4, byteorder="big"), self.__max.to_bytes(length=4, byteorder="big")])
+            return segment_bytes.encode([self.__min.to_bytes(length=8, byteorder="big"), self.__max.to_bytes(length=8, byteorder="big")])
         else:
-            return bytes([TYPE_INT])
-        
+            return bytes()
+    
+    @staticmethod
     def decode_type(data : bytes):
-        values = segmented_bytearray.decode(data[1:])
+        values = segment_bytes.decode(data)
 
         if len(values) == 0:
             return IntegerTypeSpecifier()
         else:
             return IntegerTypeSpecifier(int.from_bytes(values[0], byteorder="big"), int.from_bytes(values[1], byteorder="big"))
+        
+types = TypeManager()
+types.define_type(ByteTypeSpecifier)
+types.define_type(IntegerTypeSpecifier)
+
+def encode(s : "PropertyTypeSpecifier"):
+    type_data = s.encode_type()
+    identifier = bytes([types.get_identifier(type(s))])
+
+    return segment_bytes.encode([identifier, type_data])
+
+def decode(d : bytes):
+    datas = segment_bytes.decode(d)
+
+
+    identifier = int.from_bytes(datas[0], byteorder="big")
+    data = datas[1]
+
+    p_type = types.get_type(identifier)
+    return p_type.decode_type(data)

@@ -3,13 +3,14 @@ import os
 import queue
 import time
 import uuid
+import segment_bytes
+import mt_events
+import traceback
 
 import ipi_ecs.core.tcp as tcp
 import ipi_ecs.core.daemon as daemon
-import ipi_ecs.core.mt_events as mt_events
 import ipi_ecs.core.transactions as transactions
-import ipi_ecs.core.segmented_bytearray as segmented_bytearray
-from ipi_ecs.dds.subsystem import SubsystemInfo
+from ipi_ecs.dds.subsystem import SubsystemInfo, StatusItem, SubsystemStatus
 from ipi_ecs.dds.magics import *
 from ipi_ecs.logging.client import LogClient
 
@@ -22,16 +23,7 @@ from ipi_ecs.logging.client import LogClient
 ENV_DDS_PORT = "IPI_ECS_DDS_PORT"
 
 class _DDSServer:
-    __E_ON_CLIENT_CONNECT = 0
-    __E_ON_CLIENT_DISCONNECT = 1
-
     class _ClientConnection:
-        __E_MESSAGE = 0
-        __E_CLOSED = 1
-        __E_CONNECTED = 2
-        __E_TRANSACT_DATA_AVAIL = 3
-        __E_NEW_TRANSACT = 4
-
         def __init__(self, sock: tcp.TCPServerSocket, server: "_DDSServer"):
             self.__socket = sock
             self.__server = server
@@ -41,16 +33,16 @@ class _DDSServer:
             self.__transactions_msg_out_queue = queue.Queue()
             self.__transactions = transactions.TransactionManager(self.__transactions_msg_out_queue)
 
-            self.__socket.on_receive(self.__event_consumer, self.__E_MESSAGE)
-            self.__socket.on_close(self.__event_consumer, self.__E_CLOSED)
-            self.__socket.on_connect(self.__event_consumer, self.__E_CONNECTED)
-            self.__transactions.on_send_data(self.__event_consumer, self.__E_TRANSACT_DATA_AVAIL)
-            self.__transactions.on_receive_transaction(self.__event_consumer, self.__E_NEW_TRANSACT)
+            self.__E_MESSAGE = self.__socket.on_receive().bind(self.__event_consumer)
+            self.__E_CLOSED = self.__socket.on_close().bind(self.__event_consumer)
+            self.__E_CONNECTED = self.__socket.on_connect().bind(self.__event_consumer)
+            self.__E_TRANSACT_DATA_AVAIL = self.__transactions.on_send_data().bind(self.__event_consumer)
+            self.__E_NEW_TRANSACT = self.__transactions.on_receive_transaction().bind(self.__event_consumer)
 
             self.__handshake_received = False
             self.__uuid = uuid.UUID(bytes=bytes(16))
 
-            self.__daemon = daemon.Daemon()
+            self.__daemon = daemon.Daemon(exception_handler=server.handle_exception)
             self.__daemon.add(self.__thread)
             self.__daemon.start()
 
@@ -89,12 +81,27 @@ class _DDSServer:
                 if not self.__handshake_received:
                     raise IOError("Invalid handshake received!")
 
-                if d[0] == MAGIC_TRANSACT:
+                elif d[0] == MAGIC_TRANSACT:
                     self.__transactions.received(d[1:])
                 
-                if d[0] == MAGIC_REQ_SUBSCRIBE:
-                    s_uuid, key = segmented_bytearray.decode(d[1:])
+                elif d[0] == MAGIC_REQ_SUBSCRIBE:
+                    s_uuid, key = segment_bytes.decode(d[1:])
                     self.__server.subscribe(self.__uuid, uuid.UUID(bytes=s_uuid), key)
+                elif d[0] == MAGIC_UPDATE_STATUS_ITEM:
+                    b_s_uuid, b_status = segment_bytes.decode(d[1:])
+                    status = StatusItem.decode(b_status)
+                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+
+                    s = self.__server.find_subsystem(s_uuid=s_uuid)
+                    s.add_status_item(status)
+                elif d[0] == MAGIC_CLEAR_STATUS_ITEM:
+                    b_s_uuid, b_status = segment_bytes.decode(d[1:])
+                    status = int.from_bytes(b_status, byteorder="big")
+                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+
+                    s = self.__server.find_subsystem(s_uuid=s_uuid)
+                    s.clear_status_item(status)
+                
 
         def __transact_status_change(self, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_data()[0] == TRANSACT_REQ_UUID:
@@ -129,52 +136,67 @@ class _DDSServer:
                 return
 
             elif t.get_data()[0] == TRANSACT_SET_KV:
-                (t_uuid, s_uuid, t_k, t_v) = segmented_bytearray.decode(t.get_data()[1:])
+                (t_uuid, s_uuid, t_k, t_v) = segment_bytes.decode(t.get_data()[1:])
 
                 self.__server.set_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k, t_v)
                 return
 
             elif t.get_data()[0] == TRANSACT_GET_KV:
-                (t_uuid, s_uuid, t_k) = segmented_bytearray.decode(t.get_data()[1:])
+                (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
 
                 self.__server.get_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
                 return
 
             elif t.get_data()[0] == TRANSACT_GET_KV_DESC:
-                (t_uuid, s_uuid, t_k) = segmented_bytearray.decode(t.get_data()[1:])
+                (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
 
                 self.__server.get_kv_desc(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
                 return
 
             elif t.get_data()[0] == TRANSACT_RESOLVE:
-                t_name, = segmented_bytearray.decode(t.get_data()[1:])
+                t_name, = segment_bytes.decode(t.get_data()[1:])
 
                 s = self.__server.find_subsystem(name=t_name)
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Not found")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
                     return
                 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_uuid().bytes)
                 return
 
             elif t.get_data()[0] == TRANSACT_GET_SUBSYSTEM:
-                t_uuid, = segmented_bytearray.decode(t.get_data()[1:])
+                t_uuid, = segment_bytes.decode(t.get_data()[1:])
 
                 s = self.__server.find_subsystem(s_uuid=uuid.UUID(bytes=t_uuid))
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Not found")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
                     return
                 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_info().encode())
                 return
+            
             elif t.get_data()[0] == TRANSACT_CALL_EVENT:
-                b_t_uuids, b_s_uuid, name, param = segmented_bytearray.decode(t.get_data()[1:])
+                b_t_uuids, b_s_uuid, name, param = segment_bytes.decode(t.get_data()[1:])
 
                 t_uuids = []
-                for t_uuid in segmented_bytearray.decode(b_t_uuids):
+                for t_uuid in segment_bytes.decode(b_t_uuids):
                     t_uuids.append(uuid.UUID(bytes=t_uuid))
 
                 self.__server.call_event(t, uuid.UUID(bytes=b_s_uuid), t_uuids, name, param)
+                return
+            
+            elif t.get_data()[0] == TRANSACT_GET_STATUS:
+                b_s_uuid, = segment_bytes.decode(t.get_data()[1:])
+                s_uuid = uuid.UUID(bytes=b_s_uuid)
+                s = self.__server.find_subsystem(s_uuid=s_uuid)
+
+                if s is None:
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
+                    return
+
+                t.ret(bytes([TRANSOP_STATE_OK]) + s.get_status().encode())
+                return
+            
             else:
                 t.nak()
 
@@ -212,7 +234,7 @@ class _DDSServer:
             #self.__socket.put(bytes([MAGIC_HANDSHAKE_SERVER]))
 
         def on_subscription_update(self, s_uuid : uuid.UUID, key : bytes, value : bytes):
-            self.__socket.put(bytes([MAGIC_SUBSCRIBED_UPD]) + segmented_bytearray.encode([s_uuid.bytes, key, value]))
+            self.__socket.put(bytes([MAGIC_SUBSCRIBED_UPD]) + segment_bytes.encode([s_uuid.bytes, key, value]))
 
         def on_system_update(self, data : bytes):
             self.__socket.put(bytes([MAGIC_SYSTEM_UPD]) + data)
@@ -233,15 +255,23 @@ class _DDSServer:
             self.__kv_store = dict()
             self.__kv_subscribers = dict()
 
-        def bind_client(self, client : "_DDSServer._ClientConnection", info: SubsystemInfo):
-            self.__info = info
-            
+            self.__active_status_items = dict()
+
+        def bind_client(self, client : "_DDSServer._ClientConnection"):            
             if self.__client is not None and self.__client.ok(): #  and self.__client.get_uuid() != client.get_uuid()
                 return False
             
             self.__client = client
+            self.__reset_cache()
             return True
         
+        def __reset_cache(self):
+            self.__kv_store.clear()
+            self.__active_status_items.clear()
+        
+        def update_info(self, info: SubsystemInfo):
+            self.__info = info
+
         def on_set_kv_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes, val: bytes):
             if r_uuid == self.__info.get_uuid():
                 self.__kv_store[key] = val
@@ -261,7 +291,7 @@ class _DDSServer:
                 t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
                 return
 
-            self.__outgoing_transop(t, bytes([TRANSACT_RSET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key, val]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RSET_KV]) + segment_bytes.encode([self.get_uuid().bytes, r_uuid.bytes, key, val]))
 
         def on_get_kv_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
             cached = self.__kv_store.get(key)
@@ -270,10 +300,10 @@ class _DDSServer:
                 t.ret(bytes([TRANSOP_STATE_OK]) + cached)
                 return
             
-            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV]) + segment_bytes.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
 
         def on_get_kv_desc_request(self, r_uuid : uuid.UUID, t : transactions.TransactionManager.IncomingTransactionHandle, key: bytes):
-            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV_DESC]) + segmented_bytearray.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
+            self.__outgoing_transop(t, bytes([TRANSACT_RGET_KV_DESC]) + segment_bytes.encode([self.get_uuid().bytes, r_uuid.bytes, key]))
 
         def __outgoing_transop_returned(self, t : transactions.TransactionManager.IncomingTransactionHandle, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
@@ -323,11 +353,26 @@ class _DDSServer:
                 elif handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
                     self.__client.get_server().event_returned(self.get_uuid(), e_uuid, EVENT_REJ, bytes())
 
-            self.__client.get_transactions().send_transaction(bytes([TRANSACT_RCALL_EVENT]) + segmented_bytearray.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, name, param])).then(then)
+            self.__client.get_transactions().send_transaction(bytes([TRANSACT_RCALL_EVENT]) + segment_bytes.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, name, param])).then(then)
             return True
         
         def on_event_return(self, e_uuid: uuid.UUID, s_uuid: uuid.UUID, status: int, value: bytes):
-            self.__client.send(bytes([MAGIC_EVENT_RET]) + segmented_bytearray.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, status.to_bytes(length=1, byteorder="big"), value]))
+            self.__client.send(bytes([MAGIC_EVENT_RET]) + segment_bytes.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, status.to_bytes(length=1, byteorder="big"), value]))
+
+        def add_status_item(self, status : StatusItem):
+            self.__active_status_items[status.get_code()] = status
+
+        def clear_status_item(self, status : int):
+            self.__active_status_items.pop(status).get_message()
+
+        def reset_status_items(self):
+            self.__active_status_items.clear()
+
+        def get_status(self):
+            state = SubsystemStatus.STATE_ALIVE if self.ok() else SubsystemStatus.STATE_DISCONNECTED
+
+            return SubsystemStatus(state, self.__active_status_items.values())
+
 
     class ServerHandle:
         def __init__(self, server: "_DDSServer"):
@@ -368,10 +413,10 @@ class _DDSServer:
 
         self.__event_consumer = mt_events.EventConsumer()
 
-        self.__server.on_connected(self.__event_consumer, self.__E_ON_CLIENT_CONNECT)
-        self.__server.on_disconnected(self.__event_consumer, self.__E_ON_CLIENT_DISCONNECT)
+        self.__E_ON_CLIENT_CONNECT = self.__server.on_connected().bind(self.__event_consumer)
+        self.__E_ON_CLIENT_DISCONNECT = self.__server.on_disconnected().bind(self.__event_consumer)
 
-        self.__daemon = daemon.Daemon()
+        self.__daemon = daemon.Daemon(exception_handler=self.handle_exception)
         self.__daemon.add(self.__client_upd_thread)
 
     def start(self):
@@ -382,6 +427,7 @@ class _DDSServer:
         while not self.__client_queue.empty():
             sock = self.__client_queue.get()
             client = self._ClientConnection(sock, self)
+            self.__log(f"Client {client.get_uuid()} has connected", level="DEBUG", event="CONN")
             self.__clients.append(client)
 
     def __disconnected_client(self):
@@ -390,7 +436,6 @@ class _DDSServer:
                 if not client.is_shutdown():
                     self.__log(f"Client {client.get_uuid()} has abruptly closed the connection", level="WARN", event="CONN")
                 
-                #print("Removing: ", client.get_uuid())
                 self.__clients.remove(client)
 
                 if client.get_uuid() == uuid.UUID(bytes=bytes(16)):
@@ -405,11 +450,12 @@ class _DDSServer:
 
                     for s in self.__subsystems.values():
                         if s.get_client_uuid() == client.get_uuid():
-                            self.__log(f"Subsystem {s.get_uuid()} has disconnected", level="INFO", event="CONN")
+                            self.__log(f"Subsystem {s.get_info().get_name()} has disconnected", level="DEBUG", event="CONN")
 
-                            s.bind_client(None, s.get_info())
+                            s.bind_client(None)
 
                             if s.get_info().get_temporary():
+                                self.__log(f"Temporary subsystem {s.get_info().get_name()} has been removed.", level="DEBUG", event="CONN")
                                 self.__subsystems.pop(s.get_uuid())
                             
                                 removed = True
@@ -422,7 +468,7 @@ class _DDSServer:
     def __client_upd_thread(self, stop_flag : daemon.StopFlag):
         while stop_flag.run():
             e = self.__event_consumer.get()
-            
+
             if e == self.__E_ON_CLIENT_CONNECT:
                 self.__new_client()
 
@@ -446,17 +492,21 @@ class _DDSServer:
                     self.subscribe(r_uuid, s_uuid, key)
                     self.__pending_subscribers.remove((r_uuid, s_uuid, key))
 
-            self.__log(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})", level="INFO")
+            self.__log(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})", level="DEBUG")
             #print(f"Registered subsystem: {s_info.get_name()}({s_info.get_uuid()})")
 
             #if s_info.get_temporary():
             #    print("Subsystem is TEMPORARY. It will be removed once it's client disconnects!")
 
-
-        ok = subsystem.bind_client(self.__clients_uuid[c_uuid], s_info)
+        if subsystem.get_client_uuid() == c_uuid:
+            subsystem.update_info(s_info)
+            return True
+        
+        ok = subsystem.bind_client(self.__clients_uuid[c_uuid])
 
         self._send_subsystems()
         if ok:
+            self.__log(f"Subsystem {s_info.get_name()} has connected", level="DEBUG", event="CONN")
             self.__log(f"Bound subsystem: {s_info.get_name()}({s_info.get_uuid()}) to client {c_uuid}", level="DEBUG")
 
         return ok
@@ -513,10 +563,10 @@ class _DDSServer:
         for s in subsystems:
             ok = s.send_event(s_uuid, e_uuid, name, param)
 
-            sent_status.append(segmented_bytearray.encode([s.get_uuid().bytes, ok.to_bytes(byteorder="big", length=1)]))
+            sent_status.append(segment_bytes.encode([s.get_uuid().bytes, ok.to_bytes(byteorder="big", length=1)]))
 
         self.__in_progress_events[e_uuid] = (name, s_uuid)
-        t.ret(bytes([TRANSOP_STATE_OK]) + segmented_bytearray.encode([e_uuid.bytes, segmented_bytearray.encode(sent_status)]))
+        t.ret(bytes([TRANSOP_STATE_OK]) + segment_bytes.encode([e_uuid.bytes, segment_bytes.encode(sent_status)]))
 
     def event_returned(self, s_uuid: uuid.UUID, e_uuid: uuid.UUID, state: int, value: bytes):
         e = self.__in_progress_events.get(e_uuid)
@@ -554,9 +604,9 @@ class _DDSServer:
         subsystem_infos = []
 
         for s in self.__subsystems.values():
-            subsystem_infos.append(segmented_bytearray.encode([s.get_info().encode(), s.ok().to_bytes(length=1, byteorder="big")]))
+            subsystem_infos.append(segment_bytes.encode([s.get_info().encode(), s.get_status().encode()]))
 
-        data = segmented_bytearray.encode(subsystem_infos)
+        data = segment_bytes.encode(subsystem_infos)
         for c in self.__clients:
             c.on_system_update(data)
 
@@ -573,6 +623,12 @@ class _DDSServer:
         
         if s_uuid is not None:
             return self.__subsystems.get(s_uuid)
+        
+    def handle_exception(self, e: Exception):
+        self.__log("Caught exception on daemon thread!", level="ERROR")
+        for line in traceback.format_exception(None, e, e.__traceback__):
+            for split in line.split('\n'):
+                self.__log(split, level="ERROR")
         
     def __log(self, msg, level = "INFO", **data):
         if self.__logger is None:
