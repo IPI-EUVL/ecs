@@ -3,9 +3,9 @@ import threading
 import time
 import queue
 import select
+import mt_events
 
 import ipi_ecs.core.daemon as daemon
-import ipi_ecs.core.mt_events as mt_events
 
 SOCKET_BUFSIZE = 1024
 DELIM = bytes([0x00])
@@ -362,17 +362,17 @@ class TCPSocket:
         
         return self.__valid()
     
-    def on_connect(self, consumer : mt_events.EventConsumer, event_id):
-        self._connected_event.bind(consumer, event_id)
+    def on_connect(self):
+        return self._connected_event
 
-    def on_disconnect(self, consumer : mt_events.EventConsumer, event_id):
-        self._disconnected_event.bind(consumer, event_id)
+    def on_disconnect(self):
+        return self._disconnected_event
 
-    def on_close(self, consumer : mt_events.EventConsumer, event_id):
-        self._closed_event.bind(consumer, event_id)
+    def on_close(self):
+        return self._closed_event
 
-    def on_receive(self, consumer : mt_events.EventConsumer, event_id):
-        self._received_event.bind(consumer, event_id)
+    def on_receive(self):
+        return self._received_event
 
     def shutdown(self):
         self._send_queue.put(CLOSE_R)
@@ -493,7 +493,7 @@ class TCPServer:
             self.__client_queue.put(handler)
             self.__connected_event.call()
 
-            handler.on_close(self.__event_consumer, self.__E_ON_CLOSE)
+            handler.on_close().bind(self.__event_consumer, self.__E_ON_CLOSE)
 
             handler.start()
 
@@ -527,8 +527,8 @@ class TCPServer:
     def ok(self):
         return self.__daemon.is_alive()
     
-    def on_connected(self, consumer : mt_events.EventConsumer, event_id):
-        self.__connected_event.bind(consumer, event_id)
+    def on_connected(self):
+        return self.__connected_event
 
-    def on_disconnected(self, consumer : mt_events.EventConsumer, event_id):
-        self.__disconnected_event.bind(consumer, event_id)
+    def on_disconnected(self):
+        return self.__disconnected_event

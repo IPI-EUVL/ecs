@@ -15,7 +15,7 @@ e_p = None
 e_h = None
 
 rec_event_handle = None
-def handle_set(requester, v):
+def handle_set(h, requester, v):
     print("Set value handle", v)
     return (magics.TRANSOP_STATE_OK, bytes())
 
@@ -23,7 +23,7 @@ def handle_get(requester):
     print("Get value handle", requester)
     return (magics.TRANSOP_STATE_OK, b"MY VALUE")
 
-def handle_event(s_uuid, param, handle: client._EventHandler.IncomingEventHandle):
+def handle_event(s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
     global rec_event_handle
     print("called event handle", param)
     print("sender is", s_uuid)
@@ -31,8 +31,11 @@ def handle_event(s_uuid, param, handle: client._EventHandler.IncomingEventHandle
     #handle.ret(b"MY BALUE")
 
 
-def setup_subsystem(handle: client.RegisteredSubsystemHandle):
+def setup_subsystem(handle: client._RegisteredSubsystemHandle):
     global p, e_p, e_h
+
+    if p is not None:
+        return
 
     print("Registered:", handle.get_info().get_name())
           
@@ -46,7 +49,10 @@ def setup_subsystem(handle: client.RegisteredSubsystemHandle):
     e_handler.on_called(handle_event)
 
     e_h = e_p.call(b"I HAVE CALLED THE EVENT", [])
-    e_h.after().catch(lambda state, reason: print("Problem with event: ", reason)).then(lambda h: print("Event has finished"))
+    if e_h is None:
+        print("event has failed to call*")
+    else:
+        e_h.after().catch(lambda state, reason: print("Problem with event: ", reason)).then(lambda h: print("Event has finished"))
 
 
     t = types.IntegerTypeSpecifier()
@@ -63,8 +69,44 @@ sock.start()
 logger = LogClient(sock, origin_uuid=c_uuid)
 
 m_client = client.DDSClient(c_uuid, logger=logger)
-m_client.register_subsystem("my subsystem", uuid.uuid3(uuid.NAMESPACE_OID, "1")).then(setup_subsystem)
-time.sleep(0.5)
+s = None
+
+def print_sys_data(self):
+    if self.__subsystem is None:
+        return
+
+    sys_dat = self.__subsystem.get_all()
+
+    for i, _ in sys_dat:
+        print("Found subsystem: ", i.get_info().get_name())
+        print("UUID: ", i.get_info().get_uuid())
+        print("Is temporary: ", i.get_info().get_temporary())
+
+        for kv in i.get_info().get_kvs():
+            print(f"Provides KV: {kv.get_key().decode()} R:{kv.get_readable()} W:{kv.get_writable()} P:{kv.get_published()}")
+
+        ps, hs = i.get_info().get_events()
+
+        for p in ps:
+            print("Provides Event: ", p.get_name())
+
+        for h in hs:
+            print("Handles Event: ", h.get_name())
+
+def reg_s():
+    global s
+
+    if s is not None:
+        return
+    
+    print("REGISTER EEJEJE")
+    s = m_client.register_subsystem("my subsystem", uuid.uuid3(uuid.NAMESPACE_OID, "1"))
+    setup_subsystem(s)
+
+m_client.when_ready().then(reg_s)
+time.sleep(1)
+
+s.put_status_item(subsystem.StatusItem(subsystem.StatusItem.STATE_WARN, 0, "MY STATUS ITEM HAS BEEN PUSHED"))
 
 cli_uuid = None
 def set_cli_uuid(val):
@@ -94,6 +136,9 @@ print(e_h.get_result(cli_uuid))
 print(e_h.get_state(uuid.uuid3(uuid.NAMESPACE_OID, "1")))
 print(e_h.get_state(cli_uuid))
 
+time.sleep(10)
+print("AAAAA")
+s.clear_status_item(0)
 #p2 = client.add_kv(b"test property2")
 #p2.value = b"my value2"
 

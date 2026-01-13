@@ -28,4 +28,6 @@ def cmd_server(args: argparse.Namespace) -> int:
         m_server.close()
         sock.close()
 
+        time.sleep(0.1)
+
     return 0

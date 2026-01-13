@@ -11,8 +11,8 @@ from rich.text import Text
 from ipi_ecs.logging.viewer import (
     LogViewer,
     QueryOptions,
-    get_format_color,
-    RICH_STYLE,
+    RICH_TYPE_STYLE,
+    RICH_MESSAGE_STYLE,
     get_subsystem,
 )
 from ipi_ecs.logging.timefmt import fmt_ns_local
@@ -61,8 +61,7 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix
 
     subsystem = get_subsystem(rec)
 
-    token = get_format_color(l_type, level)
-    sev_style = RICH_STYLE.get(token, "")
+    sev_style = RICH_TYPE_STYLE.get(level, "")
 
     t = Text()
     t.append(f"{ln.line:>10}  ", style="dim")
@@ -79,14 +78,14 @@ def _format_logline_rich(ln, *, show_uuids: bool, hide_uuids: bool, range_prefix
         t.append(f"{uuid} ", style="magenta")
 
     # Subsystem label
-    t.append(f"{subsystem}: ", style=RICH_STYLE.get("info", "") or "cyan")
+    t.append(f"{subsystem}: ", style=RICH_TYPE_STYLE.get("subsystem", ""))
 
     # Message (highlight warnings/errors)
 
     if len(t) + len(msg) > screen_width - 5:
         msg = msg[:screen_width - (len(t) + 5)] + "..."
     
-    t.append(msg, style=sev_style if token in {"error", "warn"} else "")
+    t.append(msg, style=RICH_MESSAGE_STYLE.get(level, ""))
 
     return t
 
@@ -215,8 +214,9 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str, str | None, 
 
                 if len(clean) > max_lbl:
                     clean = clean[: max(0, max_lbl - 1)] + "…"
+                    
                 text = Text(clean.ljust(w), style="dim")
-                text.highlight_words([lbl.replace("\n", " ").strip()], "orange1 underline")
+                text.highlight_words([lbl.replace("\n", " ").strip()], "orange1 underline blink" if end is None else "orange1")
 
             if end is None and label_line_for.get(rng) + 1 == ln:
                 max_lbl = w - 2
@@ -239,7 +239,7 @@ def _build_range_prefix_map(rows, ranges: list[tuple[int, int, str, str | None, 
 
 def _highlight_line(line: Text) -> Text:
     out = line.copy()
-    out.stylize("reverse blink")
+    out.stylize("reverse")
     return out
 
 

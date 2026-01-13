@@ -4,11 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipi-ecs"
-version = "0.1.0"
+version = "0.1.1"
 description = "IPI EUVL experiment control system"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
+  "segment-bytes",
+  "mt-events",
   "platformdirs>=4.2",
   "prompt_toolkit>=3.0",
   "python-dateutil>=2.9",
@@ -17,7 +19,17 @@ dependencies = [
 ]
 
 license = { text = "MIT" }
-authors = [{ name = "IPI Research Group" }]
+
+authors = [
+  { name = "Illinois Plasma Institute" },
+  { name = "Alp Doganer", email = "doganer2@illinois.edu" },
+]
+maintainers = [
+  { name = "Alp Doganer", email = "doganer2@illinois.edu" },
+]
+
+[project.urls]
+Repository = "https://github.com/IPI-EUVL/ecs.git"
 
 [project.scripts]
 ipi-ecs = "ipi_ecs.cli.main:main"

@@ -1,14 +1,15 @@
 import queue
 import time
 import uuid
+import traceback
+import segment_bytes
+import mt_events
 
 from ipi_ecs.core import tcp
 from ipi_ecs.core import daemon
-from ipi_ecs.core import mt_events
 from ipi_ecs.core import transactions
-from ipi_ecs.core import segmented_bytearray
 
-from ipi_ecs.dds.subsystem import SubsystemInfo, KVDescriptor, EventDescriptor
+from ipi_ecs.dds.subsystem import SubsystemInfo, KVDescriptor, EventDescriptor, StatusItem, SubsystemStatus
 from ipi_ecs.dds.types import PropertyTypeSpecifier, ByteTypeSpecifier
 
 # I don't want to have to add all magic values one by one, pylance! Stop complaining!
@@ -64,7 +65,7 @@ class _TransOpHandle:
 class TransopException(Exception):
     pass
 
-class RegisteredSubsystemHandle:
+class _RegisteredSubsystemHandle:
     def __init__(self, subsystem: "DDSClient._RegisteredSubsystem"):
         self.__subsystem = subsystem
 
@@ -103,8 +104,17 @@ class RegisteredSubsystemHandle:
     
     def add_event_handler(self, name : bytes):
         return self.__subsystem.add_event_handler(name)
+    
+    def put_status_item(self, item: StatusItem):
+        self.__subsystem.put_status_item(item)
 
-class RemoteSubsystemHandle:
+    def clear_status_item(self, code: int):
+        self.__subsystem.clear_status_item(code)
+
+    def reset_status_items(self):
+        self.__subsystem.reset_status_items()
+
+class _RemoteSubsystemHandle:
     def __init__(self, client: "DDSClient", info: SubsystemInfo, me: "DDSClient._RegisteredSubsystem"):
         self.__info = info
         self.__client = client
@@ -113,19 +123,22 @@ class RemoteSubsystemHandle:
     def get_info(self):
         return self.__info
     
+    def get_status(self):
+        return self.__me.get_client().get_status(self.__info.get_uuid())
+    
     def get_kv(self, key : bytes):
         awaiter = mt_events.Awaiter()
 
         def __ret(value: KVDescriptor):
             kv = self.__me.add_remote_kv(self.__info.get_uuid(), value)
             awaiter.call(kv)
-        
-        self.__me.get_kv_desc(self.__info.get_uuid(), key, KVP_RET_AWAIT).then(__ret)
+
+        self.__me.get_kv_desc(self.__info.get_uuid(), key, KVP_RET_AWAIT).then(__ret).catch(awaiter.throw)
         return awaiter.get_handle()
     
-class InProgressEvent:
+class _InProgressEvent:
     class _Handle:
-        def __init__(self, handle: "InProgressEvent"):
+        def __init__(self, handle: "_InProgressEvent"):
             self.__handle = handle
 
         def get_result(self, t_uuid):
@@ -152,7 +165,7 @@ class InProgressEvent:
         def get_uuid(self):
             return self.__handle.get_uuid()
 
-    def __init__(self, name: bytes, subsystem: "DDSClient._RegisteredSubsystem", r_type: PropertyTypeSpecifier, call_transop : mt_events.Awaiter.AwaiterHandle):
+    def __init__(self, name: bytes, subsystem: "DDSClient._RegisteredSubsystem", r_type: PropertyTypeSpecifier, call_transop : mt_events.Awaiter._AwaiterHandle):
         self.__name = name
         self.__results = dict()
         self.__subsystem = subsystem
@@ -166,12 +179,12 @@ class InProgressEvent:
 
         def _state_change(v):
             self.__state = EVENT_IN_PROGRESS
-            b_e_uuid, b_rets = segmented_bytearray.decode(v)
+            b_e_uuid, b_rets = segment_bytes.decode(v)
 
-            rets = segmented_bytearray.decode(b_rets)
+            rets = segment_bytes.decode(b_rets)
 
             for ret in rets:
-                b_uuid, b_ok = segmented_bytearray.decode(ret)
+                b_uuid, b_ok = segment_bytes.decode(ret)
                 s_uuid = uuid.UUID(bytes=b_uuid)
                 ok = bool.from_bytes(b_ok, byteorder="big")
 
@@ -266,7 +279,7 @@ class _EventHandler:
         def set_types(self, paramerer_type, return_type):
             self.__handler.set_types(paramerer_type, return_type)
         
-    class IncomingEventHandle:
+    class _IncomingEventHandle:
         def __init__(self, handler: "_EventHandler", e_uuid: uuid.UUID):
             self.__handler = handler
             self.__e_uuid = e_uuid
@@ -295,7 +308,7 @@ class _EventHandler:
         except ValueError:
             return (EVENT_REJ, b"Value is not valid for property type")
         
-        self.__on_call(sender, v, self.IncomingEventHandle(self, e_uuid))
+        self.__on_call(sender, v, self._IncomingEventHandle(self, e_uuid))
 
     def handle_return(self, e_uuid: uuid.UUID, state, value):
         if state != EVENT_OK:
@@ -363,10 +376,13 @@ class _EventProvider:
         for target in targets:
             t_bytes.append(target.bytes)
         
-        t_bytes = segmented_bytearray.encode(t_bytes)
+        t_bytes = segment_bytes.encode(t_bytes)
         
         a = self.__subsystem.get_client().call_event(self.__name, v, t_bytes, self.__subsystem.get_uuid(), KVP_RET_AWAIT)
-        h = InProgressEvent(self.__name, self.__subsystem, self.__r_type, a)
+        if a is None:
+            return None
+        
+        h = _InProgressEvent(self.__name, self.__subsystem, self.__r_type, a)
 
         return h.get_handle()
         
@@ -397,7 +413,7 @@ class _KVHandlerBase:
         pass
 
 class _KVHandler(_KVHandlerBase):
-    class KVHandle:
+    class _KVHandle:
         def __init__(self, handler : "_KVHandler"):
             self.__handler = handler
 
@@ -424,7 +440,7 @@ class _KVHandler(_KVHandlerBase):
 
         self.__p_type = ByteTypeSpecifier()
 
-        self.__handle = self.KVHandle(self)
+        self.__handle = self._KVHandle(self)
 
     def remote_set(self, requester: uuid.UUID, value: bytes):
         if self.__on_set is None:
@@ -466,7 +482,7 @@ class _KVHandler(_KVHandlerBase):
 
     
 class _LocalProperty(_KVHandlerBase):
-    class __PropertyHandler:
+    class _PropertyHandler:
         def __init__(self, provider : "_LocalProperty"):
             self.__property = provider
 
@@ -498,7 +514,7 @@ class _LocalProperty(_KVHandlerBase):
 
         self.__p_type = ByteTypeSpecifier()
 
-        self.__property_handler = self.__PropertyHandler(self)
+        self.__property_handler = self._PropertyHandler(self)
 
         if send: # Cacned values are read-only
             self.__writable = False
@@ -692,12 +708,6 @@ class _RemoteProperty:
         self.__new_data_handler = func
 
 class DDSClient:
-    __E_MESSAGE = 0
-    __E_TRANSACT_DATA_AVAIL = 1
-    __E_CONNECTED = 2
-    __E_NEW_TRANSACT = 4
-    __E_DISCONNECTED = 5
-
     REG_STATE_OK = 0
     REG_STATE_REFUSED = 1
     REG_STATE_NOT_REGISTERED = 2
@@ -713,10 +723,11 @@ class DDSClient:
 
             self.__in_progress_events = dict()
             self.__incoming_events = dict()
+            self.__active_status_items = dict()
 
             self.__logger = logger
 
-            self.log(f"Registered subsystem: {self.get_info().get_name()}", level="DEBUG")
+            self.log(f"Create subsystem: {self.get_info().get_name()}", level="DEBUG")
 
 
         def get_info(self):
@@ -726,7 +737,7 @@ class DDSClient:
             return self.__client.get_registered()
         
         def get_handle(self):
-            return RegisteredSubsystemHandle(self)
+            return _RegisteredSubsystemHandle(self)
         
         def get_uuid(self):
             return self.__info.get_uuid()
@@ -779,7 +790,7 @@ class DDSClient:
             for (_, kvp) in self.__kv_providers.items():
                 r.append(kvp.get_type_descriptor(self.get_uuid()))
             
-            return segmented_bytearray.encode(r)
+            return segment_bytes.encode(r)
         
         def get_event_descriptors(self):
             h = []
@@ -791,7 +802,7 @@ class DDSClient:
             for (_, e) in self.__event_providers.items():
                 p.append(e.get_descriptor(self.get_uuid()))
             
-            return segmented_bytearray.encode([segmented_bytearray.encode(h), segmented_bytearray.encode(p)])
+            return segment_bytes.encode([segment_bytes.encode(p), segment_bytes.encode(h)])
         
         def get_kv_descriptor(self, requester: uuid.UUID, key : bytes):
             kvp = self.__kv_providers.get(key)
@@ -805,10 +816,14 @@ class DDSClient:
             self.__info = SubsystemInfo(self.__info.get_uuid(), self.__info.get_name(), self.__info.get_temporary(), self.get_kv_descriptors(), self.get_event_descriptors())
             self.__client.send_subsystem_info(self.__info)
 
+        def reconnected(self):
+            for item in self.__active_status_items.values():
+                self.__client.send_status_item(self.get_uuid(), item)
+
         def get_system(self):
             return self.__client.get_system(self)
         
-        def add_in_progress_event(self, e: InProgressEvent):
+        def add_in_progress_event(self, e: _InProgressEvent):
             self.__in_progress_events[e.get_uuid()] = e
 
         def incoming_event(self, e: uuid.UUID, t: transactions.TransactionManager.IncomingTransactionHandle, s_uuid: uuid.UUID, name: bytes, param: bytes):
@@ -863,6 +878,19 @@ class DDSClient:
             
             self.__logger.log(msg, level=level, l_type="SW", subsystem=self.get_info().get_name(), **data)
 
+        def put_status_item(self, item: StatusItem):
+            self.__client.send_status_item(self.get_uuid(), item)
+
+            self.__active_status_items[item.get_code()] = item
+
+        def clear_status_item(self, code: int):
+            self.__client.clear_status_item(self.get_uuid(), code)
+
+            self.__active_status_items.pop(code)
+
+        def reset_status_items(self):
+            self.__active_status_items.clear()
+
     def __init__(self, c_uuid : uuid.UUID, ip = "127.0.0.1", logger = None):
         self.__uuid = c_uuid
         self.__logger = logger
@@ -873,9 +901,7 @@ class DDSClient:
         self.__socket.start()
 
         self.__registered = self.REG_STATE_NOT_REGISTERED
-        self.__registered_awaiter = mt_events.Awaiter()
         self.__subsystem_handles = dict()
-        self.__subsystem_info = []
         self.__active_subscribers = dict()
 
         self.__cached_subsystems = dict()
@@ -887,14 +913,16 @@ class DDSClient:
 
         self.__event_consumer = mt_events.EventConsumer()
 
-        self.__socket.on_receive(self.__event_consumer, self.__E_MESSAGE)
-        self.__socket.on_connect(self.__event_consumer, self.__E_CONNECTED)
-        self.__socket.on_disconnect(self.__event_consumer, self.__E_DISCONNECTED)
-        self.__transactions.on_send_data(self.__event_consumer, self.__E_TRANSACT_DATA_AVAIL)
-        self.__transactions.on_receive_transaction(self.__event_consumer, self.__E_NEW_TRANSACT)
+        #pylint: disable=invalid-name
+        self.__E_MESSAGE = self.__socket.on_receive().bind(self.__event_consumer)
+        self.__E_CONNECTED = self.__socket.on_connect().bind(self.__event_consumer)
+        self.__E_DISCONNECTED = self.__socket.on_disconnect().bind(self.__event_consumer)
+        self.__E_TRANSACT_DATA_AVAIL = self.__transactions.on_send_data().bind(self.__event_consumer)
+        self.__E_NEW_TRANSACT = self.__transactions.on_receive_transaction().bind(self.__event_consumer)
+
+        self.__ready_awaiter = mt_events.Awaiter()
 
         self.__ready_event = mt_events.Event()
-        self.__registered_event = mt_events.Event()
         self.__remote_subsystem_update_event = mt_events.Event()
 
         self.__handshake_received = False
@@ -902,6 +930,9 @@ class DDSClient:
         self.__daemon = daemon.Daemon()
         self.__daemon.add(self.__thread)
         self.__daemon.start()
+
+    def when_ready(self):
+        return self.__ready_awaiter.get_handle()
 
     def __receive(self):
         #pylint: disable=unbalanced-tuple-unpacking
@@ -920,40 +951,49 @@ class DDSClient:
 
             if not self.__handshake_received:
                 raise IOError("Invalid handshake received!")
+            
+            try:
+                if d[0] == MAGIC_TRANSACT:
+                    self.__transactions.received(d[1:])
+                elif d[0] == MAGIC_SUBSCRIBED_UPD:
+                    s_uuid, key, val = segment_bytes.decode(d[1:])
 
-            if d[0] == MAGIC_TRANSACT:
-                self.__transactions.received(d[1:])
-            elif d[0] == MAGIC_SUBSCRIBED_UPD:
-                s_uuid, key, val = segmented_bytearray.decode(d[1:])
 
+                    for kvs in self.__active_subscribers[uuid.UUID(bytes=s_uuid)]:
+                        if kvs.get_key() == key:
+                            kvs.remote_set(val)
+                elif d[0] == MAGIC_SYSTEM_UPD:
+                    s_data = segment_bytes.decode(d[1:])
+                    for b_data in s_data:
+                        b_info, b_status = segment_bytes.decode(b_data)
+                        info = SubsystemInfo.decode(b_info)
+                        state = SubsystemStatus.decode(b_status)
 
-                for kvs in self.__active_subscribers[uuid.UUID(bytes=s_uuid)]:
-                    if kvs.get_key() == key:
-                        kvs.remote_set(val)
-            elif d[0] == MAGIC_SYSTEM_UPD:
-                s_data = segmented_bytearray.decode(d[1:])
-                for b_data in s_data:
-                    b_info, b_ok = segmented_bytearray.decode(b_data)
-                    info = SubsystemInfo.decode(b_info)
-                    ok = bool.from_bytes(b_ok, byteorder="big")
+                        self.__cached_subsystems[info.get_uuid()] = (info, state)
 
-                    self.__cached_subsystems[info.get_uuid()] = (info, ok)
+                        self.__remote_subsystem_update_event.call()
+                elif d[0] == MAGIC_EVENT_RET:
+                    b_s_uuid, b_r_uuid, b_e_uuid, b_status, ret_value = segment_bytes.decode(d[1:])
+                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+                    r_uuid = uuid.UUID(bytes=b_r_uuid)
+                    e_uuid = uuid.UUID(bytes=b_e_uuid)
 
-                    self.__remote_subsystem_update_event.call()
-            elif d[0] == MAGIC_EVENT_RET:
-                b_s_uuid, b_r_uuid, b_e_uuid, b_status, ret_value = segmented_bytearray.decode(d[1:])
-                s_uuid = uuid.UUID(bytes=b_s_uuid)
-                r_uuid = uuid.UUID(bytes=b_r_uuid)
-                e_uuid = uuid.UUID(bytes=b_e_uuid)
+                    status = int.from_bytes(b_status, byteorder="big")
 
-                status = int.from_bytes(b_status, byteorder="big")
+                    s = self.__subsystem_handles.get(s_uuid)
+                    if s is None:
+                        self.__log("Received event return for event from subsystem not registered with this client", level="ERROR")
+                        return
+                    #print(s, status, ret_value)
+                    s.on_event_return(e_uuid, r_uuid, status, ret_value)
+            except Exception as e:
+                self.__log(f"Error while parsing data: {d}", level="ERROR")
 
-                s = self.__subsystem_handles.get(s_uuid)
-                if s is None:
-                    self.__log("Received event return for event from subsystem not registered with this client", level="ERROR")
-                    return
-                #print(s, status, ret_value)
-                s.on_event_return(e_uuid, r_uuid, status, ret_value)
+                for line in traceback.format_exception(type(e), value=e, tb=None):
+                    self.__log(line.removesuffix('\n'), level="ERROR")
+
+                raise
+
 
     def __receive_transact(self):
         # pylint: disable=unbalanced-tuple-unpacking
@@ -976,7 +1016,7 @@ class DDSClient:
             self.__rset_kv(t)
 
         elif t.get_data()[0] == TRANSACT_RGET_KV_DESC:
-            s_uuid, r_uuid, key = segmented_bytearray.decode(t.get_data()[1:])
+            s_uuid, r_uuid, key = segment_bytes.decode(t.get_data()[1:])
             s = self.__subsystem_handles.get(uuid.UUID(bytes=s_uuid))
             if s is None:
                 self.__log("Received request to get KV descriptor for subsystem not registered with this client", level="ERROR")
@@ -990,7 +1030,7 @@ class DDSClient:
             
             t.ret(bytes([TRANSOP_STATE_OK]) + desc)
         elif t.get_data()[0] == TRANSACT_RCALL_EVENT:
-            b_s_uuid, b_r_uuid, b_e_uuid, name, param = segmented_bytearray.decode(t.get_data()[1:])
+            b_s_uuid, b_r_uuid, b_e_uuid, name, param = segment_bytes.decode(t.get_data()[1:])
             s_uuid = uuid.UUID(bytes=b_s_uuid)
             r_uuid = uuid.UUID(bytes=b_r_uuid)
             e_uuid = uuid.UUID(bytes=b_e_uuid)
@@ -1007,7 +1047,7 @@ class DDSClient:
     
     def __rget_kv(self, t: transactions.TransactionManager.IncomingTransactionHandle):
         # pylint: disable=unbalanced-tuple-unpacking
-        (t_uuid, s_uuid, key) = segmented_bytearray.decode(t.get_data()[1:])
+        (t_uuid, s_uuid, key) = segment_bytes.decode(t.get_data()[1:])
 
         t_uuid = uuid.UUID(bytes=t_uuid)
         s_uuid = uuid.UUID(bytes=s_uuid)
@@ -1028,7 +1068,7 @@ class DDSClient:
 
     def __rset_kv(self, t: transactions.TransactionManager.IncomingTransactionHandle):
         # pylint: disable=unbalanced-tuple-unpacking
-        (t_uuid, s_uuid, key, value) = segmented_bytearray.decode(t.get_data()[1:])
+        (t_uuid, s_uuid, key, value) = segment_bytes.decode(t.get_data()[1:])
 
         t_uuid = uuid.UUID(bytes=t_uuid)
         s_uuid = uuid.UUID(bytes=s_uuid)
@@ -1100,37 +1140,39 @@ class DDSClient:
 
     def __transact_status_change(self, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_data()[0] == TRANSACT_REG_SUBSYSTEM:
-            if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-                #print("Could not register subsystem!")
-                self.__registered = self.REG_STATE_REFUSED
+            info = SubsystemInfo.decode(handle.get_data()[1:])
+
+            if self.__subsystem_handles.get(info.get_uuid()) is None:
+                self.__log(f"Subsystem {info.get_name()} not found but was registered?!", level="ERROR")
+                return
+            
+            subsystem_handle = self.__subsystem_handles[info.get_uuid()]
 
             if handle.get_state() != transactions.TransactionManager.OutgoingTransactionHandle.STATE_RET:
+                self.__log(f"Could not register subsystem: {subsystem_handle.get_info().get_name()}!", level="ERROR")
                 return
             
-            info = SubsystemInfo.decode(handle.get_data()[1:])
-            
-            if self.__subsystem_handles.get(info.get_uuid()) is not None:
-                return
-            
-            self.__registered = self.REG_STATE_OK
-
-            subsystem_handle = self._RegisteredSubsystem(info, self, self.__logger)
             self.__log(f"Registered subsystem: {subsystem_handle.get_info().get_name()}", level="DEBUG")
+
+            subsystem_handle.reconnected()
             #print("Registered subsystem: ", subsystem_handle.get_info().get_name())
 
-            self.__subsystem_handles[subsystem_handle.get_info().get_uuid()] = subsystem_handle
 
-            self.__registered_event.call()
-            self.__registered_awaiter.call(subsystem_handle.get_handle())
+            #self.__registered_event.call()
+            #self.__registered_awaiter.call(subsystem_handle.get_handle())
 
 
     def __ready(self):
         self.__ready_event.call()
         self.__is_ready = True
 
-        self.__send_subsystem_infos()
+        for s in self.__subsystem_handles.values():
+            s.invalidate()
 
+        #self.__send_subsystem_infos()
         self.__refresh_subscriptions()
+
+        self.__ready_awaiter.call()
         
     def close(self):
         #print("Shutting down socket")
@@ -1146,8 +1188,15 @@ class DDSClient:
         return not self.__socket.is_closed() and self.__daemon.is_alive()
     
     def register_subsystem(self, name: str, s_uuid: uuid.UUID, temporary = False):
-        self.__subsystem_info.append(SubsystemInfo(s_uuid, name, temporary))
-        return self.__registered_awaiter.get_handle()
+        info = SubsystemInfo(s_uuid, name, temporary)
+        subsystem_handle = self._RegisteredSubsystem(info, self, self.__logger)
+        self.__subsystem_handles[s_uuid] = subsystem_handle
+
+        if self.__is_ready:
+            self.send_subsystem_info(info)
+
+        return subsystem_handle.get_handle()
+
     
     def __transop(self, data, await_type = KVP_RET_AWAIT, unpack_value = None):
         if not self.__is_ready:
@@ -1173,6 +1222,7 @@ class DDSClient:
         s = TRANSOP_STATE_OK if handle.get_result()[0] == TRANSOP_STATE_OK else TRANSOP_STATE_REJ
         reason = None if s == TRANSOP_STATE_OK else handle.get_result()[1:].decode("utf-8")
         value = None if s != TRANSOP_STATE_OK else handle.get_result()[1:]
+
 
         if s != TRANSOP_STATE_OK:
             awaiter.throw(state=s, reason=reason)
@@ -1201,58 +1251,67 @@ class DDSClient:
         op_handle.set_value(value)
 
     def set_kv(self, key : str, val : bytes, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        return self.__transop(bytes([TRANSACT_SET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key, val]), ret_type)
+        return self.__transop(bytes([TRANSACT_SET_KV]) + segment_bytes.encode([t_uuid.bytes, s_uuid.bytes, key, val]), ret_type)
 
     def get_kv(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        return self.__transop(bytes([TRANSACT_GET_KV]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
+        return self.__transop(bytes([TRANSACT_GET_KV]) + segment_bytes.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type)
     
     def get_kv_desc(self, key : str, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segmented_bytearray.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type, unpack_value=KVDescriptor.decode)
+        return self.__transop(bytes([TRANSACT_GET_KV_DESC]) + segment_bytes.encode([t_uuid.bytes, s_uuid.bytes, key]), ret_type, unpack_value=KVDescriptor.decode)
     
     def call_event(self, key : str, param : bytes, t_uuids : bytes, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
-        return self.__transop(bytes([TRANSACT_CALL_EVENT]) + segmented_bytearray.encode([t_uuids, s_uuid.bytes, key, param]), ret_type)
+        return self.__transop(bytes([TRANSACT_CALL_EVENT]) + segment_bytes.encode([t_uuids, s_uuid.bytes, key, param]), ret_type)
     
     def resolve(self, name : bytes, ret_type = KVP_RET_AWAIT):
-        return self.__transop(bytes([TRANSACT_RESOLVE]) + segmented_bytearray.encode([name]), ret_type, unpack_value=lambda v: uuid.UUID(bytes=v))
+        return self.__transop(bytes([TRANSACT_RESOLVE]) + segment_bytes.encode([name]), ret_type, unpack_value=lambda v: uuid.UUID(bytes=v))
+    
+    def get_status(self, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
+        return self.__transop(bytes([TRANSACT_GET_STATUS]) + segment_bytes.encode([s_uuid.bytes]), ret_type, unpack_value=SubsystemStatus.decode)
     
     def get_subsystem(self, t_uuid : uuid.UUID, s_uuid : uuid.UUID, ret_type = KVP_RET_AWAIT):
         def unpack(v):
-            return RemoteSubsystemHandle(self, SubsystemInfo.decode(v), self.__subsystem_handles[s_uuid])
+            return _RemoteSubsystemHandle(self, SubsystemInfo.decode(v), self.__subsystem_handles[s_uuid])
 
-        return self.__transop(bytes([TRANSACT_GET_SUBSYSTEM]) + segmented_bytearray.encode([t_uuid.bytes]), ret_type, unpack_value=unpack)
+        return self.__transop(bytes([TRANSACT_GET_SUBSYSTEM]) + segment_bytes.encode([t_uuid.bytes]), ret_type, unpack_value=unpack)
     
     def __send_subsystem_infos(self):
-        for s in self.__subsystem_info:
-            self.send_subsystem_info(s)
+        for s in self.__subsystem_handles.values():
+            self.send_subsystem_info(s.get_info())
     
     def send_subsystem_info(self, info):
         self.__transactions.send_transaction(bytes([TRANSACT_REG_SUBSYSTEM]) + info.encode()).then(self.__transact_status_change)
 
+    def send_status_item(self, s_uuid: uuid.UUID, status: StatusItem):
+        self.__socket.put(bytes([MAGIC_UPDATE_STATUS_ITEM]) + segment_bytes.encode([s_uuid.bytes, status.encode()]))
+
+    def clear_status_item(self, s_uuid: uuid.UUID, code: int):
+        self.__socket.put(bytes([MAGIC_CLEAR_STATUS_ITEM]) + segment_bytes.encode([s_uuid.bytes, code.to_bytes(length=1, byteorder="big")]))
+
     def __refresh_subscriptions(self):
         for l in self.__active_subscribers.values():
             for kv in l:
-                self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segmented_bytearray.encode([kv.get_remote().bytes, kv.get_key()]))
+                self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segment_bytes.encode([kv.get_remote().bytes, kv.get_key()]))
 
     def _add_active_subscriber(self, kv: _RemoteProperty):
         if self.__active_subscribers.get(kv.get_remote()) is None:
             self.__active_subscribers[kv.get_remote()] = []
 
         self.__active_subscribers[kv.get_remote()].append(kv)
-        self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segmented_bytearray.encode([kv.get_remote().bytes, kv.get_key()]))
+        self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segment_bytes.encode([kv.get_remote().bytes, kv.get_key()]))
 
 
     def get_registered(self):
         return self.__registered
     
     def get_system(self, subsystem : "DDSClient._RegisteredSubsystem"):
-        handles = []
-        for info in self.__cached_subsystems:
-            handles.append(RemoteSubsystemHandle(self, info, subsystem))
+        ret = []
+        for info, state in self.__cached_subsystems.values():
+            ret.append((_RemoteSubsystemHandle(self, info, subsystem), state))
 
-        return self.__cached_subsystems
+        return ret
     
-    def on_remote_system_update(self, c: mt_events.EventConsumer, e):
-        self.__remote_subsystem_update_event.bind(c, e)
+    def on_remote_system_update(self):
+        return self.__remote_subsystem_update_event
 
     def __log(self, msg, level = "INFO", **data):
         if self.__logger is None:
