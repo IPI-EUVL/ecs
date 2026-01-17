@@ -140,14 +140,12 @@ class SQLiteIndex:
         self._ensure_next_line()
 
     def close(self) -> None:
-        try:
-            self.conn.close()
-        except Exception:
-            pass
+        self.conn.close()
 
     def _ensure_next_line(self) -> None:
         row = self.conn.execute("SELECT v FROM meta WHERE k='next_line'").fetchone()
         if row is None:
+            print("NO NEW LINE FOUND! Will reset to zero.")
             self.conn.execute("INSERT INTO meta(k,v) VALUES('next_line','0')")
             self.conn.commit()
 
