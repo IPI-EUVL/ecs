@@ -360,9 +360,9 @@ class SQLiteIndex:
         end_line: int,
         end_ts_ns: int,
         data_end: Any | None = None,
-    ) -> None:
+    ) -> bool:
         now = _now_ns()
-        self.conn.execute(
+        cur = self.conn.execute(
             """
             UPDATE events
             SET end_line=?, end_ts_ns=?, data_end_json=?, updated_ns=?
@@ -377,6 +377,7 @@ class SQLiteIndex:
             ),
         )
         self.conn.commit()
+        return cur.rowcount > 0
 
     def end_last_event(
         self,
