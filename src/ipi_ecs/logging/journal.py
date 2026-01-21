@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_log_dir
+from platformdirs import site_data_dir
 from ipi_ecs.logging.index import SQLiteIndex
 
 
@@ -19,7 +19,7 @@ def resolve_log_dir(cli_log_dir: Path | None, env_var: str) -> Path:
     env = os.getenv(env_var)
     if env:
         return Path(env)
-    return Path(user_log_dir(appname="ipi-ecs", appauthor="IPI", ensure_exists=True))
+    return Path(site_data_dir(appname="ipi-ecs", appauthor="IPI", ensure_exists=True))
 
 
 @dataclass
