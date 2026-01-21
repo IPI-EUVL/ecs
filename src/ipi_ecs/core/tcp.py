@@ -525,7 +525,7 @@ class TCPServer:
         self.__socket.close()
 
     def ok(self):
-        return self.__daemon.is_alive()
+        return self.__daemon.is_ok()
     
     def on_connected(self):
         return self.__connected_event
