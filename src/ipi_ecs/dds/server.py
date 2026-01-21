@@ -391,7 +391,7 @@ class _DDSServer:
         self.__client_queue = queue.Queue()
         
         if port is None:
-            port = os.environ.get("ENV_DDS_PORT")
+            port = os.environ.get("ECS_PORT")
 
         if port is None:
             port = SERVER_PORT
