@@ -4,7 +4,10 @@ import base64
 import queue
 import time
 from pathlib import Path
+import traceback
 from typing import Any
+
+from ipi_ecs.core.daemon import StopFlag
 
 from ipi_ecs.core import tcp  # your wrapper should be here
 from ipi_ecs.logging.journal import JournalWriter, resolve_log_dir
@@ -62,6 +65,7 @@ def run_logger_server(
     *,
     rotate_max_bytes: int = 256 * 1024 * 1024,
     rotate_max_seconds: int = 60 * 60,
+    stop_flag: StopFlag | None = None,
 ) -> None:
     addr, port = bind
     if port is None:
@@ -87,7 +91,7 @@ def run_logger_server(
     clients: list[Any] = []
 
     try:
-        while srv.ok():
+        while srv.ok() and not (stop_flag is not None and not stop_flag.run()):
             while not client_q.empty():
                 clients.append(client_q.get())
 
@@ -187,6 +191,11 @@ def run_logger_server(
 
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        print("Logger server exception:\n", traceback.format_exc())
+        raise
     finally:
+        print("Closing logger server...")
         writer.close()
         srv.close()
+        print("Logger server stopped.")
