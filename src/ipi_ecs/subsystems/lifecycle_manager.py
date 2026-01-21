@@ -94,7 +94,7 @@ class LifecycleManager:
     START_TIMEOUT = 10.0
     DC_TIMEOUT = 10.0
 
-    def __init__(self, s_uuid):
+    def __init__(self, s_uuid: uuid.UUID):
         self.__s_uuid = s_uuid
 
         self.__logger_sock = tcp.TCPClientSocket()
@@ -111,6 +111,7 @@ class LifecycleManager:
         self.__states = dict()
         self.__runtime_states = dict()
         self.__subsystem = None
+        self.__out_kv = None
 
         self.__start_handles = []
         self.__stop_handles = []
@@ -162,6 +163,9 @@ class LifecycleManager:
             self.__update_states()
             self.__update_processes()
             self.__update_handles()
+
+            if self.__out_kv is not None:
+                self.__out_kv.value = self.__encode_runtime_states()
 
     def close(self):
         self.__logger.log(
@@ -542,11 +546,13 @@ class LifecycleManager:
     def __on_got_subsystem(self, handle: client._RegisteredSubsystemHandle):
         self.__subsystem = handle
 
-        handle.add_event_handler(b"start subsystem").on_called(self.__start_event)
-        handle.add_event_handler(b"stop subsystem").on_called(self.__stop_event)
-        handle.add_event_handler(b"restart subsystem").on_called(self.__restart_event)
-        handle.add_event_handler(b"start all subsystems").on_called(self.__start_all_event)
-        handle.add_event_handler(b"stop all subsystems").on_called(self.__stop_all_event)
+        handle.add_event_handler(b"start_subsystem").on_called(self.__start_event)
+        handle.add_event_handler(b"stop_subsystem").on_called(self.__stop_event)
+        handle.add_event_handler(b"restart_subsystem").on_called(self.__restart_event)
+        handle.add_event_handler(b"start_all_subsystems").on_called(self.__start_all_event)
+        handle.add_event_handler(b"stop_all_subsystems").on_called(self.__stop_all_event)
+
+        self.__out_kv = handle.get_kv_property(b"lifecycle_manager_runtime_states", False, True, True)
 
     def __get_subsystem_uuid(self, param: bytes):
         if len(param) != 16:
@@ -669,3 +675,17 @@ class LifecycleManager:
             d_bytes.append(segment_bytes.encode([s_uuid.bytes, s.encode()]))
 
         return segment_bytes.encode(d_bytes)
+    
+def decode_runtime_states(self, data: bytes):
+    d_bytes = segment_bytes.decode(data)
+
+    ret = dict()
+
+    for item in d_bytes:
+        s_uuid_bytes, s_state_bytes = segment_bytes.decode(item)
+        s_uuid = uuid.UUID(bytes=s_uuid_bytes)
+        s_state = SubsystemRuntimeState.decode(s_state_bytes)
+
+        ret[s_uuid] = s_state
+    
+    return ret
