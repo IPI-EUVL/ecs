@@ -72,7 +72,7 @@ class SubsystemRuntimeState:
         ret_str += f"Started: {self.started}\n"
 
         return ret_str
-
+"""
 class SubsystemRuntimeStatesType(types.PropertyTypeSpecifier):
     def __init__(self):
         pass
@@ -87,6 +87,7 @@ class SubsystemRuntimeStatesType(types.PropertyTypeSpecifier):
         return SubsystemRuntimeStatesType()
     
 types.types.define_type(SubsystemRuntimeStatesType)
+"""
 
 
 class LifecycleManager:
