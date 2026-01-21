@@ -212,6 +212,9 @@ class Library:
             entries.append(s_uuid)
         return entries
 
+    def close(self) -> None:
+        self.__conn.close()
+
 
 class Entry:
     def __init__(
