@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipi-ecs"
-version = "0.1.1"
+version = "0.1.2"
 description = "IPI EUVL experiment control system"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -15,7 +15,8 @@ dependencies = [
   "prompt_toolkit>=3.0",
   "python-dateutil>=2.9",
   "rich>=13",
-  "textual>=6.2"
+  "textual>=6.2",
+  "pywin32>=305",
 ]
 
 license = { text = "MIT" }
@@ -33,6 +34,8 @@ Repository = "https://github.com/IPI-EUVL/ecs.git"
 
 [project.scripts]
 ipi-ecs = "ipi_ecs.cli.main:main"
+ipi-ecs-logger = "ipi_ecs.services.logger_server_service:main"
+ipi-ecs-ddsserver = "ipi_ecs.services.dds_server_service:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
