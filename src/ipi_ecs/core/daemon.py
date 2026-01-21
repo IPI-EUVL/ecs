@@ -57,6 +57,7 @@ class Daemon:
         self.__threads = []
 
         self.__started = False
+        self.__ok = True
 
         self.__exception_queue = queue.Queue()
         self.__exception_handler = exception_handler
@@ -99,6 +100,16 @@ class Daemon:
 
         return running
     
+    def is_ok(self):
+        if not self.__ok:
+            return False
+        
+        for thread in self.__threads:
+            if not thread.is_alive():
+                return False
+
+        return True
+
     def stop(self):
         for thread in self.__threads:
             thread.stop()
@@ -110,6 +121,7 @@ class Daemon:
         if self.__exception_handler is not None:
             self.__exception_handler(exception)
 
+        self.__ok = False
         self.stop()
 
         raise exception
