@@ -32,8 +32,8 @@ _log_to_file("module load: sys.executable={0}".format(sys.executable))
 
 class LifecycleManagerService(win32serviceutil.ServiceFramework):
     _svc_name_ = "ipi-ecs-LifecycleManagerService"
-    _svc_display_name_ = "ipi-ecs DDS Server Service"
-    _svc_description_ = "DDS Server Service for ipi-ecs"
+    _svc_display_name_ = "ipi-ecs Lifecycle Manager Service"
+    _svc_description_ = "Lifecycle Manager Service for ipi-ecs"
 
     def __init__(self, args):
         self.__logger_sock = None
