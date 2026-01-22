@@ -87,6 +87,7 @@ class LifecycleManagerService(win32serviceutil.ServiceFramework):
                 #raise Exception("Simulated exception for testing")  # Remove or comment out in production
 
             self.__logger.log("LifecycleManagerService.SvcDoRun stopping.", level="INFO", subsystem="LifecycleManagerService")
+            _log_to_file("LifecycleManagerService.SvcDoRun stopping.")
         except Exception as e:
             _log_to_file(f"LifecycleManagerService.SvcDoRun exception:\n{traceback.format_exc()}")
             servicemanager.LogErrorMsg(
@@ -97,7 +98,7 @@ class LifecycleManagerService(win32serviceutil.ServiceFramework):
                     self.__logger.log(split, level="ERROR", subsystem="LifecycleManagerService")
             raise e
         finally:
-            if hasattr(self, "__lifecycle_manager"):
+            if hasattr(self, "_lifecycle_manager"):
                 self._lifecycle_manager.close()
             if hasattr(self, "__logger_sock"):
                 self.__logger_sock.close()
