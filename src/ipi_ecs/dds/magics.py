@@ -9,6 +9,7 @@ MAGIC_SYSTEM_UPD = 0x05
 MAGIC_EVENT_RET = 0x06
 MAGIC_UPDATE_STATUS_ITEM = 0x07
 MAGIC_CLEAR_STATUS_ITEM = 0x08
+MAGIC_EVENT_FEEDBACK = 0x09
 
 TRANSACT_REQ_UUID = 0x10
 TRANSACT_CONN_READY = 0x11
@@ -32,9 +33,22 @@ EVENT_PENDING = 0
 EVENT_IN_PROGRESS = 1
 EVENT_OK = 2
 EVENT_REJ = 3
+EVENT_ABORTED = 3
 
 TRANSOP_STATE_OK = 0
 TRANSOP_STATE_REJ = 1
 TRANSOP_STATE_PENDING = 2
 
 SERVER_PORT = 11750
+
+E_SUBSYSTEM_NOT_FOUND = b"Specified subsystem not found."
+E_SUBSYSTEMS_NOT_FOUND = b"One or more specified subsystem(s) not found."
+E_KVP_NOT_FOUND = b"Specified value not found."
+E_DOES_NOT_HANDLE_EVENT = b"Subsystem does not handle specified event."
+E_SUBSYSTEM_DISCONNECTED = b"Subsystem client is disconnected"
+E_TRANSOP_TRANSACTIPN_REJ = b"Transaction rejected"
+E_READONLY = b"Value is read-only."
+E_WRITEONLY = b"Value is write-only."
+E_INVALID_VALUE = b"Value is invalid."
+E_NO_CACNE = b"Value has not been set yet!"
+E_EVENT_ABORTED = b"Event was aborted or timed out."

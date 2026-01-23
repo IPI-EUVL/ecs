@@ -188,7 +188,7 @@ class _InProgressEvent:
                 s_uuid = uuid.UUID(bytes=b_uuid)
                 ok = bool.from_bytes(b_ok, byteorder="big")
 
-                self.set_result(s_uuid, EVENT_IN_PROGRESS if ok else EVENT_REJ, b"Subsystem disconnected" if not ok else None)
+                self.set_result(s_uuid, EVENT_IN_PROGRESS if ok else EVENT_REJ, E_SUBSYSTEM_DISCONNECTED if not ok else None)
 
             self.__uuid = uuid.UUID(bytes=b_e_uuid)
             self.__subsystem.add_in_progress_event(self)
@@ -306,7 +306,7 @@ class _EventHandler:
         try:
             v = self.__p_type.parse(value)
         except ValueError:
-            return (EVENT_REJ, b"Value is not valid for property type")
+            return (EVENT_REJ, E_INVALID_VALUE)
         
         self.__on_call(sender, v, self._IncomingEventHandle(self, e_uuid))
 
@@ -319,7 +319,7 @@ class _EventHandler:
             v = self.__r_type.encode(value)
         except ValueError:
             self.__subsystem.log("Received invalid data from handler function!", level="ERROR")
-            return (TRANSOP_STATE_REJ, b"Internal error, handler returned invalid data!")
+            return (TRANSOP_STATE_REJ, E_INVALID_VALUE)
 
         self.__subsystem.send_event_return(e_uuid, state, v)
         
@@ -444,13 +444,13 @@ class _KVHandler(_KVHandlerBase):
 
     def remote_set(self, requester: uuid.UUID, value: bytes):
         if self.__on_set is None:
-            return (TRANSOP_STATE_REJ, b"Value is write-only")
+            return (TRANSOP_STATE_REJ, E_WRITEONLY)
         
         return self.__on_set(self.__handle, requester, self.__p_type.parse(value))
         
     def remote_get(self, requester: uuid.UUID):
         if self.__on_get is None:
-            return (TRANSOP_STATE_REJ, b"Value is read-only")
+            return (TRANSOP_STATE_REJ, E_READONLY)
         
         state, ret = self.__on_get(requester)
 
@@ -523,12 +523,12 @@ class _LocalProperty(_KVHandlerBase):
 
     def remote_set(self, requester: uuid.UUID, value : bytes):
         if not self.__writable:
-            return (TRANSOP_STATE_REJ, b"Value is read-only")
+            return (TRANSOP_STATE_REJ, E_READONLY)
         
         try:
             self.__p_type.parse(value)
         except ValueError:
-            return (TRANSOP_STATE_REJ, b"Value is not valid for property type")
+            return (TRANSOP_STATE_REJ, E_INVALID_VALUE)
         
         if self.__new_data_handler is not None:
             self.__new_data_handler(self.__p_type.parse(value))
@@ -538,10 +538,10 @@ class _LocalProperty(_KVHandlerBase):
 
     def remote_get(self, requester: uuid.UUID):
         if not self.__readable:
-            return (TRANSOP_STATE_REJ, b"Value is write-only")
+            return (TRANSOP_STATE_REJ, E_WRITEONLY)
         
         if self.__value is None:
-            return (TRANSOP_STATE_REJ, b"Value has not been set yet!")
+            return (TRANSOP_STATE_REJ, E_NO_CACNE)
         
         return (TRANSOP_STATE_OK, self.__value)
     
@@ -830,7 +830,7 @@ class DDSClient:
             e_h = self.__event_handlers.get(name)
 
             if e_h is None:
-                t.ret(bytes([EVENT_REJ]) + b"Subsystem does not handle specified event.")
+                t.ret(bytes([EVENT_REJ]) + E_DOES_NOT_HANDLE_EVENT)
                 return
 
             self.__incoming_events[e] = t
@@ -1020,12 +1020,12 @@ class DDSClient:
             s = self.__subsystem_handles.get(uuid.UUID(bytes=s_uuid))
             if s is None:
                 self.__log("Received request to get KV descriptor for subsystem not registered with this client", level="ERROR")
-                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
                 return
 
             desc = s.get_kv_descriptor(r_uuid, key)
             if desc is None:
-                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem does not contain specified key.")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + E_KVP_NOT_FOUND)
                 return
             
             t.ret(bytes([TRANSOP_STATE_OK]) + desc)
@@ -1038,7 +1038,7 @@ class DDSClient:
             s = self.__subsystem_handles.get(s_uuid)
             if s is None:
                 self.__log("Received request to call event for subsystem not registered with this client", level="ERROR")
-                t.ret(bytes([EVENT_REJ]) + b"Specified subsystem not found.")
+                t.ret(bytes([EVENT_REJ]) + E_SUBSYSTEM_NOT_FOUND)
                 return
             
             s.incoming_event(e_uuid, t, r_uuid, name, param)
@@ -1054,13 +1054,13 @@ class DDSClient:
 
         if self.__subsystem_handles.get(t_uuid) is None:
             self.__log("Received request to get kv for subsystem not registered with this client", level="ERROR")
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
 
         p = self.__subsystem_handles[t_uuid].get_kvp(key)
         if p is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified value not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_KVP_NOT_FOUND)
             return
 
         state, data = p.remote_get(s_uuid)
@@ -1075,12 +1075,12 @@ class DDSClient:
 
         if self.__subsystem_handles.get(t_uuid) is None:
             self.__log("Received request to set kv for subsystem not registered with this client", level="ERROR")
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
         p = self.__subsystem_handles[t_uuid].get_kvp(key)
         if p is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified value not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_KVP_NOT_FOUND)
             return
 
         state, data = p.remote_set(s_uuid, value)
@@ -1094,7 +1094,7 @@ class DDSClient:
         s_uuid = uuid.UUID(bytes=s_uuid)
 
         if self.__subsystem_handles.get(t_uuid) is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Specified subsystem not found.")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
         p = self.__subsystem_handles[t_uuid].get_event_handler(e_name)
@@ -1152,7 +1152,7 @@ class DDSClient:
                 self.__log(f"Could not register subsystem: {subsystem_handle.get_info().get_name()}!", level="ERROR")
                 return
             
-            self.__log(f"Registered subsystem: {subsystem_handle.get_info().get_name()}", level="DEBUG")
+            #self.__log(f"Registered subsystem: {subsystem_handle.get_info().get_name()}", level="DEBUG")
 
             subsystem_handle.reconnected()
             #print("Registered subsystem: ", subsystem_handle.get_info().get_name())
@@ -1312,6 +1312,9 @@ class DDSClient:
     
     def on_remote_system_update(self):
         return self.__remote_subsystem_update_event
+    
+    def send_event_feedback(self, e_uuid: uuid.UUID, s_uuid: uuid.UUID, state: int, v: bytes):
+        self.__socket.put(bytes([MAGIC_EVENT_FEEDBACK]) + segment_bytes.encode([s_uuid.bytes, e_uuid.bytes, state.to_bytes(length=1, byteorder="big"), v]))
 
     def __log(self, msg, level = "INFO", **data):
         if self.__logger is None:

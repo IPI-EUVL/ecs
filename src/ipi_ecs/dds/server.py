@@ -158,7 +158,7 @@ class _DDSServer:
 
                 s = self.__server.find_subsystem(name=t_name)
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
                     return
                 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_uuid().bytes)
@@ -169,7 +169,7 @@ class _DDSServer:
 
                 s = self.__server.find_subsystem(s_uuid=uuid.UUID(bytes=t_uuid))
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
                     return
                 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_info().encode())
@@ -191,7 +191,7 @@ class _DDSServer:
                 s = self.__server.find_subsystem(s_uuid=s_uuid)
 
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem not found")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
                     return
 
                 t.ret(bytes([TRANSOP_STATE_OK]) + s.get_status().encode())
@@ -288,7 +288,7 @@ class _DDSServer:
                 return
             
             if self.__client is None:
-                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_DISCONNECTED)
                 return
 
             self.__outgoing_transop(t, bytes([TRANSACT_RSET_KV]) + segment_bytes.encode([self.get_uuid().bytes, r_uuid.bytes, key, val]))
@@ -307,14 +307,14 @@ class _DDSServer:
 
         def __outgoing_transop_returned(self, t : transactions.TransactionManager.IncomingTransactionHandle, handle : transactions.TransactionManager.OutgoingTransactionHandle):
             if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
-                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Transaction rejected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + E_TRANSOP_TRANSACTIPN_REJ)
                 return
             
             t.ret(handle.get_result())
 
         def __outgoing_transop(self, t: transactions.TransactionManager.IncomingTransactionHandle, data: bytes):
             if self.__client is None:
-                t.ret(bytes([TRANSOP_STATE_REJ]) + b"Subsystem client is disconnected")
+                t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_DISCONNECTED)
                 return
             
             self.__client.get_transactions().send_transaction(data).then(self.__outgoing_transop_returned, [t])
@@ -517,7 +517,7 @@ class _DDSServer:
         #print("Set KV From ", r_uuid, " to ", t_uuid, " key: ", key, " value: ", val)
 
         if s is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
         s.on_set_kv_request(r_uuid, t, key, val)
@@ -528,7 +528,7 @@ class _DDSServer:
         #print("Get KV From ", r_uuid, " to ", t_uuid, " key: ", key)
 
         if s is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
         s.on_get_kv_request(r_uuid, t, key)
@@ -537,7 +537,7 @@ class _DDSServer:
         s = self.__subsystems.get(t_uuid)
 
         if s is None:
-            t.ret(bytes([TRANSOP_STATE_REJ]) + b"Target subsystem not found")
+            t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
             return
 
         s.on_get_kv_desc_request(r_uuid, t, key)
@@ -550,7 +550,7 @@ class _DDSServer:
                 s = self.__subsystems.get(t_uuid)
 
                 if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + b"One targeted subsystem was not found.")
+                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEMS_NOT_FOUND)
                     return
                 
                 subsystems.append(s)
@@ -571,14 +571,14 @@ class _DDSServer:
     def event_returned(self, s_uuid: uuid.UUID, e_uuid: uuid.UUID, state: int, value: bytes):
         e = self.__in_progress_events.get(e_uuid)
         if e is None:
-            self.__log("Received event return for event that does not exist!", level="ERROR")
+            self.__log(f"Received event return for event that does not exist: {e_uuid}", level="ERROR")
             return
         
         _, r_uuid = e
         s = self.find_subsystem(s_uuid=r_uuid)
 
         if s is None:
-            self.__log("Received event return for event sent by subsystem that does not exist!", level="ERROR")
+            self.__log(f"Received event return for event sent by subsystem that does not exist: {r_uuid}", level="ERROR")
             return
         
         s.on_event_return(e_uuid, s_uuid, state, value)
@@ -591,7 +591,7 @@ class _DDSServer:
         r = self.__clients_uuid.get(r_uuid)
 
         if r is None:
-            self.__log(f"Target receiver {r_uuid} to add subscriber not found, who are you?!", level="ERROR")
+            self.__log(f"Target publisher {r_uuid} to add subscriber not found, who are you?!", level="ERROR")
             return
 
         if s is None:
