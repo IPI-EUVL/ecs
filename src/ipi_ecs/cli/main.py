@@ -11,6 +11,7 @@ from ipi_ecs.logging.viewer import LogViewer, QueryOptions, format_line, PT_STYL
 from ipi_ecs.logging.timefmt import fmt_ns_local
 from ipi_ecs.logging.reader import JournalReader
 
+import ipi_ecs.cli.commands.call_event as call_event
 import ipi_ecs.cli.commands.echo as echo
 import ipi_ecs.cli.commands.server as server
 
@@ -778,19 +779,30 @@ def build_parser() -> argparse.ArgumentParser:
     ploc.add_argument("--line", type=int, required=True)
     ploc.set_defaults(fn=cmd_log_locate)
 
+    p_dds = sub.add_parser("dds", help="Log viewing tools.")
+    sub_dds = p_dds.add_subparsers(dest="ddscmd", required=True)
+
     # server
-    ps = sub.add_parser("server", help="Run the ECS DDS server.")
+    ps = sub_dds.add_parser("server", help="Run the ECS DDS server.")
     ps.add_argument("--host", default="0.0.0.0")
     ps.add_argument("--port", type=int, default=None)
     ps.set_defaults(fn=server.cmd_server)
 
     # echo
-    pe = sub.add_parser("echo", help="Echo a DDS key from a subsystem.")
+    pe = sub_dds.add_parser("echo", help="Echo a DDS key from a subsystem.")
     pe.add_argument("--sys", type=str)
     pe.add_argument("--hz", type=int, default=None)
     pe.add_argument("name", type=str, default=None)
     pe.add_argument("key", type=str)
     pe.set_defaults(fn=echo.main)
+
+    p_event = sub_dds.add_parser("event", help="Run ECS event tools.")
+    sub_event = p_event.add_subparsers(dest="eventcmd", required=True)
+
+    p_call = sub_event.add_parser("call", help="Call an ECS event.")
+    p_call.add_argument("event", type=str, help="Event name to call.")
+    p_call.add_argument("--data", type=str, default="", help="bytes data payload.")
+    p_call.set_defaults(fn=call_event.main)
 
     return p
 

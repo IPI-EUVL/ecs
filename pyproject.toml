@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
   "segment-bytes",
-  "mt-events>=0.1.1",
+  "mt-events>=0.1.2",
   "platformdirs>=4.2",
   "prompt_toolkit>=3.0",
   "python-dateutil>=2.9",
