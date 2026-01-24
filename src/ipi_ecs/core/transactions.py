@@ -50,11 +50,14 @@ class TransactionManager:
         STATE_ACK = 1
         STATE_NAK = 2
         STATE_RET = 3
-        def __init__(self, data : bytes):
+        STATE_ABORTED = 4
+        def __init__(self, data : bytes, tm: "TransactionManager"):
             self.__data = data
             self.__result = None
+            self.__tm = tm
 
             self.__ack = None
+            self.__abort = False
 
             self.__event_state_change = mt_events.Event()
 
@@ -89,7 +92,9 @@ class TransactionManager:
             return self.__result
         
         def get_state(self):
-            if self.__result is not None:
+            if self.__abort:
+                return self.STATE_ABORTED
+            elif self.__result is not None:
                 return self.STATE_RET
             elif self.__ack is None:
                 return self.STATE_PENDING
@@ -112,15 +117,21 @@ class TransactionManager:
             if self.__cb_fn is not None:
                 self.__cb_fn(*self.__cb_pargs, **self.__cb_kwargs)
 
+        def abort(self):
+            self.__tm.abort(self.get_uuid())
+            self.__abort = True
+            self.__event_state_change.call()
+            self.__call_cb()
+
     class OutgoingTransactionHandle:
         STATE_PENDING = 0
         STATE_ACK = 1
         STATE_NAK = 2
         STATE_RET = 3
-
+        STATE_ABORTED = 4
         def __init__(self, handle : "TransactionManager.__OutgoingTransactionData"):
             self.__handle = handle
-        
+
         def get_data(self):
             return self.__handle.get_data()
         
@@ -138,6 +149,9 @@ class TransactionManager:
 
         def then(self, fn, pargs = [], kwargs = dict()):
             self.__handle.then(fn, pargs, kwargs)
+
+        def abort(self):
+            self.__handle.abort()
 
     def __init__(self, out_stream : queue.Queue):
         self.__sent_transactions = dict()
@@ -184,7 +198,7 @@ class TransactionManager:
         self.__on_send_data.call()
 
     def send_transaction(self, data : bytes):
-        t = self.__OutgoingTransactionData(data)
+        t = self.__OutgoingTransactionData(data, self)
         b = self.__get_bytes(t)
 
         if self.__sent_transactions.get(t.get_uuid()) is not None:
@@ -211,6 +225,9 @@ class TransactionManager:
             self.__sent_transactions.pop(t_uuid)
         elif sw == MAGIC_RET_TRANS:
             self.__recv_ret(t_uuid, data[17:])
+
+    def abort(self, t_uuid : uuid.UUID):
+        out_d = self.__sent_transactions.pop(t_uuid, None)
 
     def get_incoming(self, block = True, timeout = 1.0) -> "TransactionManager.IncomingTransactionHandle":
         return self.__recv_trans_queue.get(block=block, timeout=timeout)
