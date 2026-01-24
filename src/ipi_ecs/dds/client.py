@@ -1241,7 +1241,7 @@ class DDSClient:
         self.__socket.close()
 
     def ok(self):
-        return not self.__socket.is_closed() and self.__daemon.is_alive()
+        return not self.__socket.is_closed() and self.__daemon.is_ok()
     
     def register_subsystem(self, name: str, s_uuid: uuid.UUID, temporary = False):
         info = SubsystemInfo(s_uuid, name, temporary)
