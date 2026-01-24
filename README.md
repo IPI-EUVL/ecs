@@ -31,18 +31,21 @@ Primarily built to support our in-house EUV source system, but the core pieces h
 - **Replay** services for reproducing past system states and debugging.
 - **Log type and origin filtering**: Filter out software-originated / state recording messages to get only the data operators want to see.
 
-### Experiment data recording / indexing*
-- **Data recording** services for capturing relevant streams/state.
-- **Indexing**: Automatically handle file saving / loading / indexing to keep a registry of what data was captured, when, and for what purpose.  
+### Data recording / indexing
+- **Records** to capture experiment-relevant data alongside logs.
+- **Data library** to index and retrieve recorded data efficiently.
+- **Tags** to annotate recorded data for easy indexing/filtering.
+- **SQLite index** for fast querying of recorded data based on time, tags, origin, etc.
+- **Data recording** services for capturing relevant streams/state.\*
 Intended use case is to record high-rate instrument data that cannot neatly fit into the logging system (i.e. exposure UV intensity over time per pulse)
 
 ### UI + operator tooling*
 - **Terminal-oriented UI** (TUI) options for interactive operation.
 - **Tk-based UI** components for GUI apps.
 
-### System structure*
-- **Lifecycle management** primitives for starting/stopping subsystems cleanly, and restarting dead systems neatly.
-- **Reflection / introspection** hooks to make it easier to build UIs and diagnostics.
+### Lifecycle and reflection
+- **Lifecycle management** services for starting/stopping subsystems cleanly, and automatically restarting dead systems to improve availability.
+- **Reflection / introspection** hooks to make it easier to build UIs and diagnostics.\*
 
 
 \* Limited functionality at this moment. This project is still under active development!
@@ -76,6 +79,9 @@ Optional dev tooling:
 ```bash
 python -m pip install -e ".[dev]"
 ```
+
+Make sure your Python install scripts directory is in PATH to be able to use CLI tools!
+
 ---
 
 ## Core concepts
@@ -102,6 +108,33 @@ Events are routed control actions:
 - Can be used as a query system as well:
     - i.e. Controller subsystem sends global event "can begin exposure"
     - If a subsystem objects, it can reject the event and provide a reason alongside as well if desired.
+
+---
+## Services
+Core components are provided as standalone services that can run in the background.
+For the moment, only Windows services are supported, but Linux systemd services are planned for the future.
+`ipi-ecs` and all of its dependencies must be installed on the system (not a user account or venv) for services to work.
+
+### Service installation (Windows, must run from elevated shell):
+```bash
+# These must be run before service installation to set up dependencies correctly
+sc.exe config ipi-ecs-LifecycleManagerService depend=ipi-ecs-DDSServerService 
+sc.exe config ipi-ecs-DDSServerService depend=ipi-ecs-LoggerService
+
+ipi-ecs-logger.exe install
+ipi-ecs-ddsserver.exe install
+```
+Services can then be managed using:
+```bash
+ipi-ecs-ddsserver.exe start     # Start service
+ipi-ecs-ddsserver.exe stop      # Stop service
+ipi-ecs-ddsserver.exe restart   # Restart service
+ipi-ecs-ddsserver.exe debug     # Run service in terminal debug mode (will show service stdout)
+```
+
+Services can also be managed using the standard `services.msc` management console ("Services" on Windows).
+Service logs are stored in the platform-appropriate log directory (i.e. `%PROGRAMDATA%/ipi-ecs/logs` on Windows).
+In addition to these services, a lifecycle manager service template is provided that can be used to build custom lifecycle managers for specific setups.
 
 ---
 
