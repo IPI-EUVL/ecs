@@ -206,6 +206,7 @@ class LifecycleManager:
             "should_start": False,
             "restart_attempts": [],
             "can_restart": True,
+            "commanded_run": True, 
         }
 
     def __on_system_update(self):
@@ -320,6 +321,9 @@ class LifecycleManager:
 
                 s["can_restart"] = False
 
+            if not s["commanded_run"]:
+                continue
+
             if not s["can_restart"]:
                 continue
 
@@ -341,6 +345,7 @@ class LifecycleManager:
             for attempt in s["restart_attempts"]:
                 if time.time() - attempt < 30.0:
                     continue
+            
             if state.started:
                 if self.__processes.get(s_uuid) is not None:
                     self.__logger.log(
@@ -468,15 +473,18 @@ class LifecycleManager:
             failed = False
             not_started = False
             for s_uuid, s in self.__subsystems.items():
-                if s["should_start"]:
-                    not_started = True
-                    break
-
                 state = self.__runtime_states[s_uuid]
 
                 if state.initializing:
                     not_started = True
-                    break
+                    continue
+
+                if s["should_start"] and not state.process_running:
+                    not_started = True
+                    continue
+
+                if not s["should_start"]:
+                    continue
 
                 if not state.connected:
                     self.__start_all_handle.fail(magics.E_STARTS_FAILED)
@@ -641,6 +649,7 @@ class LifecycleManager:
         s = self.__subsystems[s_uuid]
 
         s["should_start"] = True
+        s["commanded_run"] = True
 
     def stop_subsystem(self, s_uuid):
         s = self.__subsystems[s_uuid]
@@ -648,6 +657,7 @@ class LifecycleManager:
         s["should_stop"] = True
         s["can_restart"] = True
         s["restart_attempts"].clear()
+        s["commanded_run"] = False
 
     def restart_subsystem(self, s_uuid):
         self.stop_subsystem(s_uuid)
