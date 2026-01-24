@@ -17,6 +17,14 @@ import ipi_ecs.dds.types as types
 
 from ipi_ecs.logging.client import LogClient
 
+class magics:
+    E_START_FAILED = b"Subsystem failed to start."
+    E_STARTS_FAILED = b"One or more subsystems failed to start."
+    E_NXUUID = b"Specified uuid is invalid, not found, or not a managed subsystem."
+    E_ALREADY_IN_PROGRESS = b"Operation already in progress."
+
+    OP_OK = b"Operation completed successfully."
+
 class SubsystemRuntimeState:
     started = False
     initializing = False
@@ -420,9 +428,11 @@ class LifecycleManager:
                 continue
 
             if not state.connected:
-                handle.fail(b"System failed to start.")
+                handle.fail(magics.E_START_FAILED)
             else:
-                handle.ret(b"Operation completed successfully.")
+                handle.ret(magics.OP_OK)
+
+            self.__start_handles.remove((s_uuid, handle))
 
         for s_uuid, handle in self.__stop_handles:
             s = self.__subsystems[s_uuid]
@@ -434,7 +444,8 @@ class LifecycleManager:
             if p is not None:
                 continue
 
-            handle.ret(b"Operation completed successfully.")
+            handle.ret(magics.OP_OK)
+            self.__stop_handles.remove((s_uuid, handle))
 
         for s_uuid, handle in self.__restart_handles:
             s = self.__subsystems[s_uuid]
@@ -447,9 +458,11 @@ class LifecycleManager:
                 continue
 
             if not state.connected:
-                handle.fail(b"System failed to start.")
+                handle.fail(magics.E_START_FAILED)
             else:
-                handle.ret(b"Operation completed successfully.")
+                handle.ret(magics.OP_OK)
+
+            self.__restart_handles.remove((s_uuid, handle))
 
         if self.__start_all_handle is not None:
             failed = False
@@ -466,12 +479,14 @@ class LifecycleManager:
                     break
 
                 if not state.connected:
-                    handle.fail(b"One or more subsystem(s) failed to start.")
+                    self.__start_all_handle.fail(magics.E_STARTS_FAILED)
+                    self.__start_all_handle = None
                     failed = True
                     break
             
             if not failed and not not_started:
-                handle.ret(b"Operation completed successfully.")
+                self.__start_all_handle.ret(magics.OP_OK)
+                self.__start_all_handle = None
 
         if self.__stop_all_handle is not None:
             running = False
@@ -483,7 +498,8 @@ class LifecycleManager:
                     break
             
             if not running:
-                handle.ret(b"Operation completed successfully.")
+                self.__stop_all_handle.ret(magics.OP_OK)
+                self.__stop_all_handle = None
 
     def __stop_subsystem(self, s_uuid):
         p = self.__processes.get(s_uuid)
@@ -571,7 +587,7 @@ class LifecycleManager:
         s_uuid = self.__get_subsystem_uuid(param)
 
         if s_uuid is None:
-            handle.fail(b"Specified UUID invalid, not found or not a managed system.")
+            handle.fail(magics.E_NXUUID)
             return
         
         self.start_subsystem(s_uuid)
@@ -582,7 +598,7 @@ class LifecycleManager:
         s_uuid = self.__get_subsystem_uuid(param)
 
         if s_uuid is None:
-            handle.fail(b"Specified UUID invalid, not found or not a managed system.")
+            handle.fail(magics.E_NXUUID)
             return
         
         self.stop_subsystem(s_uuid)
@@ -593,7 +609,7 @@ class LifecycleManager:
         s_uuid = self.__get_subsystem_uuid(param)
 
         if s_uuid is None:
-            handle.fail(b"Specified UUID invalid, not found or not a managed system.")
+            handle.fail(magics.E_NXUUID)
             return
         
         self.restart_subsystem(s_uuid)
@@ -602,7 +618,7 @@ class LifecycleManager:
 
     def __start_all_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         if self.__start_all_handle is not None:
-            handle.fail(b"Operation already in progress!")
+            handle.fail(magics.E_ALREADY_IN_PROGRESS)
             return
         
         self.start_all()
@@ -611,7 +627,7 @@ class LifecycleManager:
 
     def __stop_all_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         if self.__stop_all_handle is not None:
-            handle.fail(b"Operation already in progress!")
+            handle.fail(magics.E_ALREADY_IN_PROGRESS)
             return
         
         self.stop_all()
