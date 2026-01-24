@@ -23,6 +23,7 @@ def _log_to_file(message: str) -> None:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(message + "\n")
+    #pylint: disable=broad-except
     except Exception:
         # Avoid crashing the service if logging fails.
         pass

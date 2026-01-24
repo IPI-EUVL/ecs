@@ -87,6 +87,7 @@ class _DDSServer:
                 elif d[0] == MAGIC_REQ_SUBSCRIBE:
                     s_uuid, key = segment_bytes.decode(d[1:])
                     self.__server.subscribe(self.__uuid, uuid.UUID(bytes=s_uuid), key)
+
                 elif d[0] == MAGIC_UPDATE_STATUS_ITEM:
                     b_s_uuid, b_status = segment_bytes.decode(d[1:])
                     status = StatusItem.decode(b_status)
@@ -94,6 +95,7 @@ class _DDSServer:
 
                     s = self.__server.find_subsystem(s_uuid=s_uuid)
                     s.add_status_item(status)
+
                 elif d[0] == MAGIC_CLEAR_STATUS_ITEM:
                     b_s_uuid, b_status = segment_bytes.decode(d[1:])
                     status = int.from_bytes(b_status, byteorder="big")
