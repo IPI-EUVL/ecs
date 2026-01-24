@@ -71,32 +71,13 @@ class JournalWriter:
 
         self.index = SQLiteIndex(root / "index.sqlite3")
         self._global_line = self.index.get_next_line()
+        self._segments = self.index.list_segments()
 
-        self._load_manifest()
         self._open_new_segment()
 
     def close(self) -> None:
         self._finalize_active_segment()
-        self._save_manifest()
-
-    def _load_manifest(self) -> None:
-        if not self._manifest_path.exists():
-            return
-        obj = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        self._global_line = int(obj.get("next_line", 0))
-        self._segments = [SegmentInfo(**seg) for seg in obj.get("segments", [])]
-
-    def _save_manifest(self) -> None:
-        tmp = self._manifest_path.with_suffix(".json.tmp")
-        obj = {
-            "v": 1,
-            "session_id": self.session_id,
-            "service": self.service_name,
-            "next_line": self._global_line,
-            "segments": [seg.__dict__ for seg in self._segments],
-        }
-        tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-        tmp.replace(self._manifest_path)
+        self.index.close()
 
     def _segment_filename(self, seq: int, start_ns: int) -> str:
         t = time.strftime("%Y-%m-%dT%H%M%S", time.gmtime(start_ns / 1e9))
@@ -148,7 +129,6 @@ class JournalWriter:
             end_line=None,
             start_ts_ns=start_ns,
             end_ts_ns=None,
-            idx_path=idx_path,
         )
         self._segments.append(seg)
         self._active_seg = seg
@@ -156,8 +136,6 @@ class JournalWriter:
         self._active_name = path.name
         self.index.create_segment(path=self._active_name, start_line=self._global_line, start_ts_ns=start_ns)
         self.index.conn.commit()
-
-        self._save_manifest()
 
     def _should_rotate(self) -> bool:
         if self._active_fp is None:
