@@ -147,6 +147,9 @@ class _InProgressEvent:
         def get_state(self, t_uuid):
             return self.__handle.get_state(t_uuid)
         
+        def get_states(self):
+            return self.__handle.get_states()
+        
         def get_event_state(self):
             return self.__handle.get_event_state()
         
@@ -164,6 +167,12 @@ class _InProgressEvent:
         
         def get_uuid(self):
             return self.__handle.get_uuid()
+        
+        def on_data(self):
+            return self.__handle.on_data()
+        
+        def abort(self):
+            self.__handle.abort()
 
     def __init__(self, name: bytes, subsystem: "DDSClient._RegisteredSubsystem", r_type: PropertyTypeSpecifier, call_transop : mt_events.Awaiter._AwaiterHandle):
         self.__name = name
@@ -176,6 +185,10 @@ class _InProgressEvent:
 
         self.__state = EVENT_PENDING
         self.__reason = None
+
+        self.__on_data_event = mt_events.Event()
+
+        self.__t_initiated = time.time()
 
         def _state_change(v):
             self.__state = EVENT_IN_PROGRESS
@@ -214,8 +227,10 @@ class _InProgressEvent:
             v = data
         
         self.__results[t_uuid] = (status, v)
+        self.__on_data_event.call()
 
         if not self.is_in_progress():
+            self.__state = EVENT_OK
             self.__awaiter.call(self.get_handle())
 
     def get_result(self, t_uuid):
@@ -233,6 +248,9 @@ class _InProgressEvent:
         s, _ = v
 
         return s
+    
+    def get_states(self):
+        return self.__results.copy()
     
     def get_event_state(self):
         return self.__state
@@ -264,6 +282,20 @@ class _InProgressEvent:
     
     def get_uuid(self):
         return self.__uuid
+    
+    def on_data(self):
+        return self.__on_data_event
+
+    def get_t_initiated(self):
+        return self.__t_initiated
+    
+    def abort(self):
+        self.__state = EVENT_ABORTED
+        self.__awaiter.throw(state=EVENT_ABORTED, reason=E_EVENT_ABORTED)
+        self.__on_data_event.call()
+
+        self.__subsystem.on_event_abort(self.__uuid)
+
 
 class _EventHandler:
     class _Handle:
@@ -290,6 +322,9 @@ class _EventHandler:
         def fail(self, reason):
             self.__handler.handle_return(self.__e_uuid, EVENT_REJ, reason)
 
+        def feedback(self, reason):
+            self.__handler.handle_feedback(self.__e_uuid, EVENT_IN_PROGRESS, reason)
+
         
     def __init__(self, subsystem: "DDSClient._RegisteredSubsystem", name : bytes):
         self.__name = name
@@ -310,7 +345,7 @@ class _EventHandler:
         
         self.__on_call(sender, v, self._IncomingEventHandle(self, e_uuid))
 
-    def handle_return(self, e_uuid: uuid.UUID, state, value):
+    def handle_return(self, e_uuid: uuid.UUID, state, value: bytes):
         if state != EVENT_OK:
             self.__subsystem.send_event_return(e_uuid, state, value)
             return
@@ -322,6 +357,9 @@ class _EventHandler:
             return (TRANSOP_STATE_REJ, E_INVALID_VALUE)
 
         self.__subsystem.send_event_return(e_uuid, state, v)
+
+    def handle_feedback(self, e_uuid: uuid.UUID, state, value):
+        self.__subsystem.send_event_feedback(e_uuid, state, value)
         
         
     def get_name(self):
@@ -345,7 +383,7 @@ class _EventProvider:
         def __init__(self, handler : "_EventProvider"):
             self.__handler = handler
 
-        def call(self, value, target: uuid.UUID):
+        def call(self, value, target: list[uuid.UUID]):
             return self.__handler.call(value, target)
 
         def get_name(self):
@@ -833,7 +871,7 @@ class DDSClient:
                 t.ret(bytes([EVENT_REJ]) + E_DOES_NOT_HANDLE_EVENT)
                 return
 
-            self.__incoming_events[e] = t
+            self.__incoming_events[e] = (t, s_uuid, name)
 
             e_h.handle_call(s_uuid, e, param)
 
@@ -860,16 +898,34 @@ class DDSClient:
             
             e.set_result(r_uuid, status, ret_value)
 
-        def send_event_return(self, e_uuid: uuid.UUID, state: int, v: bytes):
-            #print("senjdi pop: ", e_uuid)
-            t = self.__incoming_events.pop(e_uuid)
+            if not e.is_in_progress():
+                self.__in_progress_events.pop(e_uuid)
 
+        def on_event_abort(self, e_uuid: uuid.UUID):
+            e = self.__in_progress_events.get(e_uuid)
+
+            if e is None:
+                self.log("Received event abort for an event that this subsystem did not send!", level="ERROR")
+                return
+            
+            if e.is_in_progress():
+                e.abort()
+
+            self.__in_progress_events.pop(e_uuid)
+
+        def send_event_return(self, e_uuid: uuid.UUID, state: int, v: bytes):
+            (t, s_uuid, name) = self.__incoming_events.get(e_uuid)
 
             if t is None:
                 self.log("Received request to send event return for an event that this subsystem did not receive", level="ERROR")
                 return
             
             t.ret(bytes([state]) + v)
+
+        def send_event_feedback(self, e_uuid: uuid.UUID, state: int, v: bytes):
+            (t, s_uuid, name) = self.__incoming_events.get(e_uuid)
+
+            self.__client.send_event_feedback(e_uuid, s_uuid, state, v)
 
         def log(self, msg, level = "INFO", **data):
             if self.__logger is None:

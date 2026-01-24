@@ -101,6 +101,15 @@ class _DDSServer:
 
                     s = self.__server.find_subsystem(s_uuid=s_uuid)
                     s.clear_status_item(status)
+
+                elif d[0] == MAGIC_EVENT_FEEDBACK:
+                    b_s_uuid, b_e_uuid, b_status, b_value = segment_bytes.decode(d[1:])
+                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+                    e_uuid = uuid.UUID(bytes=b_e_uuid)
+                    status = int.from_bytes(b_status, byteorder="big")
+                    value = b_value
+
+                    self.__server.event_returned(s_uuid, e_uuid, status, value)
                 
 
         def __transact_status_change(self, handle : transactions.TransactionManager.OutgoingTransactionHandle):
