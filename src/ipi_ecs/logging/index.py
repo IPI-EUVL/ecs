@@ -222,13 +222,16 @@ class SQLiteIndex:
         lm = level_map or DEFAULT_LEVEL_MAP
         lvl = (level or "INFO").upper()
         lvl_num = int(lm.get(lvl, 0))
-        self.conn.execute(
-            """
-            INSERT INTO records(line,ts_ns,ingest_ts_ns,level_num,level,uuid,l_type,segment_path,offset)
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,
-            (int(line), int(ts_ns), int(ingest_ts_ns), lvl_num, lvl, uuid, l_type, segment_path, int(offset)),
-        )
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO records(line,ts_ns,ingest_ts_ns,level_num,level,uuid,l_type,segment_path,offset)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (int(line), int(ts_ns), int(ingest_ts_ns), lvl_num, lvl, uuid, l_type, segment_path, int(offset)),
+            )
+        except sqlite3.IntegrityError as e:
+            raise ValueError(f"Failed to insert log record at line {line}: {e}") from e
 
     def query_lines(
         self,
