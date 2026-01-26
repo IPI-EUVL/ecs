@@ -1,3 +1,4 @@
+import struct
 import segment_bytes
 from ipi_ecs.dds.magics import *
 
@@ -91,9 +92,89 @@ class IntegerTypeSpecifier(PropertyTypeSpecifier):
         else:
             return IntegerTypeSpecifier(int.from_bytes(values[0], byteorder="big"), int.from_bytes(values[1], byteorder="big"))
         
+class FloatTypeSpecifier(PropertyTypeSpecifier):
+    def __init__(self, r_min = None, r_max = None):
+        self.__min = r_min
+        self.__max = r_max
+
+    def parse(self, data : bytes):
+        if len(data) != 8:
+            raise ValueError()
+        
+        v = struct.unpack("d", data)[0]
+
+        if (self.__max is not None and v > self.__max) or (self.__min is not None and v < self.__min):
+            raise ValueError()
+        
+        return v
+    
+    def encode(self, data : float):
+        if (self.__max is not None and data > self.__max) or (self.__min is not None and data < self.__min):
+            raise ValueError()
+        
+        return struct.pack("d", data)
+    
+    def encode_type(self):
+        if self.__min is not None:
+            return segment_bytes.encode([struct.pack("d", self.__min), struct.pack("d", self.__max)])
+        else:
+            return bytes()
+    
+    @staticmethod
+    def decode_type(data : bytes):
+        values = segment_bytes.decode(data)
+
+        if len(values) == 0:
+            return FloatTypeSpecifier()
+        else:
+            return FloatTypeSpecifier(struct.unpack("d", values[0])[0], struct.unpack("d", values[1])[0])
+        
+class VectorTypeSpecifier(PropertyTypeSpecifier):
+    def __init__(self, element_type : PropertyTypeSpecifier, length : int):
+        self.__element_type = element_type
+        self.__length = length
+    
+    def parse(self, data : bytes):
+        elements = segment_bytes.decode(data)
+        if len(elements) != self.__length:
+            raise ValueError()
+        
+        result = []
+        for e in elements:
+            result.append(self.__element_type.parse(e))
+        
+        return result
+    
+    def encode(self, data : list):
+        if len(data) != self.__length:
+            raise ValueError()
+        
+        encoded_elements = []
+        for e in data:
+            encoded_elements.append(self.__element_type.encode(e))
+        
+        return segment_bytes.encode(encoded_elements)
+    
+    def encode_type(self):
+        element_type_data = self.__element_type.encode_type()
+        length_data = self.__length.to_bytes(length=4, byteorder="big")
+
+        return segment_bytes.encode([element_type_data, length_data])
+    
+    @staticmethod
+    def decode_type(data : bytes):
+        datas = segment_bytes.decode(data)
+
+        element_type = PropertyTypeSpecifier.decode_type(datas[0])
+        length = int.from_bytes(datas[1], byteorder="big")
+
+        return VectorTypeSpecifier(element_type, length)
+
 types = TypeManager()
 types.define_type(ByteTypeSpecifier)
 types.define_type(IntegerTypeSpecifier)
+types.define_type(FloatTypeSpecifier)
+types.define_type(VectorTypeSpecifier)
 
 def encode(s : "PropertyTypeSpecifier"):
     type_data = s.encode_type()
