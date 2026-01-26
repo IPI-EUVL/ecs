@@ -701,7 +701,7 @@ class _RemoteProperty:
         except ValueError as exc:
             raise ValueError("Property type is incompatible with provided value") from exc
         
-        self.__subsystem.get_client().set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid())
+        return self.__subsystem.get_client().set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid(), KVP_RET_AWAIT)
 
     def handle_get_value(self):
         if not self.__readable:
