@@ -1,5 +1,4 @@
 import csv
-import numpy as np
 import os
 import re
 import uuid
@@ -295,7 +294,7 @@ class Entry:
 
     def __resource(self, filename, mode: str | None = "r"):
         p = os.path.join(self.__res_path, filename)
-        file = open(p, mode, encoding="utf-8")
+        file = open(p, mode, encoding=("utf-8" if "b" not in mode else None))
 
         return file
 
