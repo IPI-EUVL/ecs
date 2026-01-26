@@ -105,6 +105,9 @@ class _RegisteredSubsystemHandle:
     def add_event_handler(self, name : bytes):
         return self.__subsystem.add_event_handler(name)
     
+    def get_status_item_exists(self, code: int):
+        return self.__subsystem.get_status_item_exists(code)
+    
     def put_status_item(self, item: StatusItem):
         self.__subsystem.put_status_item(item)
 
