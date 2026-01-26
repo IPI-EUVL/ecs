@@ -1057,8 +1057,9 @@ class DDSClient:
             except Exception as e:
                 self.__log(f"Error while parsing data: {d}", level="ERROR")
 
-                for line in traceback.format_exception(type(e), value=e, tb=None):
-                    self.__log(line.removesuffix('\n'), level="ERROR")
+                for line in traceback.format_exception(None, e, e.__traceback__):
+                    for split in line.split("\n"):
+                        self.__logger.log(split, level="ERROR", subsystem="DDSClient", l_type="SW")
 
                 raise
 
