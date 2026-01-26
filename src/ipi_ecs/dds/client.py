@@ -472,7 +472,7 @@ class _KVHandler(_KVHandlerBase):
             return self.__handler.get_key()
         
         def set_type(self, type):
-            self.__handler.set(type)
+            self.__handler.set_type(type)
 
         
     def __init__(self, key : bytes, subsystem: "DDSClient._RegisteredSubsystem"):
