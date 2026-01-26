@@ -16,14 +16,13 @@ import ipi_ecs.dds.subsystem as subsystem
 import ipi_ecs.dds.types as types
 
 from ipi_ecs.logging.client import LogClient
+from ipi_ecs.dds.magics import OP_OK
 
 class magics:
     E_START_FAILED = b"Subsystem failed to start."
     E_STARTS_FAILED = b"One or more subsystems failed to start."
     E_NXUUID = b"Specified uuid is invalid, not found, or not a managed subsystem."
     E_ALREADY_IN_PROGRESS = b"Operation already in progress."
-
-    OP_OK = b"Operation completed successfully."
 
 class SubsystemRuntimeState:
     started = False
@@ -435,7 +434,7 @@ class LifecycleManager:
             if not state.connected:
                 handle.fail(magics.E_START_FAILED)
             else:
-                handle.ret(magics.OP_OK)
+                handle.ret(OP_OK)
 
             self.__start_handles.remove((s_uuid, handle))
 
@@ -449,7 +448,7 @@ class LifecycleManager:
             if p is not None:
                 continue
 
-            handle.ret(magics.OP_OK)
+            handle.ret(OP_OK)
             self.__stop_handles.remove((s_uuid, handle))
 
         for s_uuid, handle in self.__restart_handles:
@@ -465,7 +464,7 @@ class LifecycleManager:
             if not state.connected:
                 handle.fail(magics.E_START_FAILED)
             else:
-                handle.ret(magics.OP_OK)
+                handle.ret(OP_OK)
 
             self.__restart_handles.remove((s_uuid, handle))
 
@@ -493,7 +492,7 @@ class LifecycleManager:
                     break
             
             if not failed and not not_started:
-                self.__start_all_handle.ret(magics.OP_OK)
+                self.__start_all_handle.ret(OP_OK)
                 self.__start_all_handle = None
 
         if self.__stop_all_handle is not None:
@@ -506,7 +505,7 @@ class LifecycleManager:
                     break
             
             if not running:
-                self.__stop_all_handle.ret(magics.OP_OK)
+                self.__stop_all_handle.ret(OP_OK)
                 self.__stop_all_handle = None
 
     def __stop_subsystem(self, s_uuid):
