@@ -95,9 +95,6 @@ class CallEventClient:
 
         self.__run = False
 
-    def is_cached(self):
-        return self.__remote_kv.is_cached() if self.__remote_kv is not None else True
-    
     def on_data(self):
         return self.__on_data
 
@@ -109,6 +106,7 @@ def main(args: argparse.Namespace):
     ret_e = m_client.on_data().bind(m_awaiter)
 
     last_states = dict()
+    last_feedback = dict()
 
     try:
         while m_client.ok():
@@ -120,14 +118,14 @@ def main(args: argparse.Namespace):
             if e == ret_e:
                 states = m_client.get_event_handle().get_states().items()
                 for s_uuid, (state, reason) in states:
-                    if s_uuid in last_states and last_states[s_uuid] == state:
+                    if (s_uuid in last_states and last_states[s_uuid] == state) and (s_uuid in last_feedback and last_feedback[s_uuid] == reason):
                         continue
 
                     if state == magics.EVENT_IN_PROGRESS:
-                        if s_uuid not in last_states:
-                            pass# print(f"Subsystem {s_uuid} has begun processing event.")
-                        else:
-                            pass# print(f"Subsystem {s_uuid} is still in progress.")
+                        if s_uuid not in last_feedback and reason is not None:
+                            print(f"Subsystem {s_uuid} has begun processing event: {reason}")
+                        elif last_feedback.get(s_uuid) != reason and reason is not None:
+                            print(f"Subsystem {s_uuid} is still in progress: {reason}")
                     elif state == magics.EVENT_OK:
                         print(f"Subsystem {s_uuid} completed successfully.")
                     elif state == magics.EVENT_REJ:
@@ -137,7 +135,7 @@ def main(args: argparse.Namespace):
                             pass# print(f"Subsystem {s_uuid} does not handle this event.")
 
                     last_states[s_uuid] = state
-
+                    last_feedback[s_uuid] = reason
             if e == nd_e and not m_client.get_event_handle().is_in_progress():
                 print("Event has concluded.")
                 states = m_client.get_event_handle().get_states().items()
