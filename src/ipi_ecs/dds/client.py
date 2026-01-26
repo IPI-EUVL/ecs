@@ -199,16 +199,20 @@ class _InProgressEvent:
 
             rets = segment_bytes.decode(b_rets)
 
+            self.__uuid = uuid.UUID(bytes=b_e_uuid)
+            self.__subsystem.add_in_progress_event(self)
+
             for ret in rets:
                 b_uuid, b_ok = segment_bytes.decode(ret)
                 s_uuid = uuid.UUID(bytes=b_uuid)
                 ok = bool.from_bytes(b_ok, byteorder="big")
 
-                self.set_result(s_uuid, EVENT_IN_PROGRESS if ok else EVENT_REJ, E_SUBSYSTEM_DISCONNECTED if not ok else None)
+                self.set_result(s_uuid, EVENT_IN_PROGRESS if ok else EVENT_REJ, E_SUBSYSTEM_DISCONNECTED if not ok else None, initial=True)
 
-            self.__uuid = uuid.UUID(bytes=b_e_uuid)
-            self.__subsystem.add_in_progress_event(self)
-        
+            if not self.is_in_progress():
+                self.__state = EVENT_OK
+                self.__awaiter.call(self.get_handle())
+
         def _transop_rej(state, reason):
             self.__reason = reason
 
@@ -220,7 +224,7 @@ class _InProgressEvent:
         self.__call_transop.then(_state_change).catch(_transop_rej)
         self.__awaiter = mt_events.Awaiter()
 
-    def set_result(self, t_uuid: uuid.UUID, status = EVENT_PENDING, data = None):
+    def set_result(self, t_uuid: uuid.UUID, status = EVENT_PENDING, data = None, initial = False):
         if status == EVENT_OK:
             try:
                 v = self.__r_type.parse(data)
@@ -232,7 +236,7 @@ class _InProgressEvent:
         self.__results[t_uuid] = (status, v)
         self.__on_data_event.call()
 
-        if not self.is_in_progress():
+        if not self.is_in_progress() and not initial:
             self.__state = EVENT_OK
             self.__awaiter.call(self.get_handle())
 
@@ -898,11 +902,10 @@ class DDSClient:
             if e is None:
                 self.log("Received event return for an event that this subsystem did not send!", level="ERROR")
                 return
-            
             e.set_result(r_uuid, status, ret_value)
 
             if not e.is_in_progress():
-                self.__in_progress_events.pop(e_uuid)
+                self.__in_progress_events.pop(e_uuid, None)
 
         def on_event_abort(self, e_uuid: uuid.UUID):
             e = self.__in_progress_events.get(e_uuid)
@@ -928,7 +931,7 @@ class DDSClient:
         def send_event_feedback(self, e_uuid: uuid.UUID, state: int, v: bytes):
             (t, s_uuid, name) = self.__incoming_events.get(e_uuid)
 
-            self.__client.send_event_feedback(e_uuid, s_uuid, state, v)
+            self.__client.send_event_feedback(e_uuid, self.get_uuid(), state, v)
 
         def log(self, msg, level = "INFO", **data):
             if self.__logger is None:
@@ -936,6 +939,9 @@ class DDSClient:
                 return
             
             self.__logger.log(msg, level=level, l_type="SW", subsystem=self.get_info().get_name(), **data)
+
+        def get_status_item_exists(self, code: int):
+            return code in self.__active_status_items
 
         def put_status_item(self, item: StatusItem):
             self.__client.send_status_item(self.get_uuid(), item)
@@ -945,7 +951,7 @@ class DDSClient:
         def clear_status_item(self, code: int):
             self.__client.clear_status_item(self.get_uuid(), code)
 
-            self.__active_status_items.pop(code)
+            self.__active_status_items.pop(code, None)
 
         def reset_status_items(self):
             self.__active_status_items.clear()
