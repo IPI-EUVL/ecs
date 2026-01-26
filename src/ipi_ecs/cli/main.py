@@ -13,6 +13,8 @@ from ipi_ecs.logging.reader import JournalReader
 
 import ipi_ecs.cli.commands.call_event as call_event
 import ipi_ecs.cli.commands.echo as echo
+import ipi_ecs.cli.commands.write as write
+import ipi_ecs.cli.commands.keyboard_jog as keyboard_jog
 import ipi_ecs.cli.commands.server as server
 
 ENV_LOG_DIR = "IPI_ECS_LOG_DIR"
@@ -796,6 +798,15 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("key", type=str)
     pe.set_defaults(fn=echo.main)
 
+    pw = sub_dds.add_parser("write", help="Write a DDS key to a subsystem.")
+    pw.add_argument("--sys", type=str)
+    pw.add_argument("--hz", type=int, default=None)
+    pw.add_argument("--once", action="store_true", help="Write only once then exit.")
+    pw.add_argument("name", type=str, default=None)
+    pw.add_argument("key", type=str)
+    pw.add_argument("value", type=str)
+    pw.set_defaults(fn=write.main)
+
     p_event = sub_dds.add_parser("event", help="Run ECS event tools.")
     sub_event = p_event.add_subparsers(dest="eventcmd", required=True)
 
@@ -803,6 +814,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_call.add_argument("event", type=str, help="Event name to call.")
     p_call.add_argument("--data", type=str, default="", help="bytes data payload.")
     p_call.set_defaults(fn=call_event.main)
+
+    p_util = sub.add_parser("util", help="Utility commands.")
+    sub_util = p_util.add_subparsers(dest="utilcmd", required=True)
+
+    p_call = sub_util.add_parser("jog", help="Send a jog vector from keyboard input.")
+    p_call.add_argument("--name", "-n", type=str, required=False, default=None, help="Target subsystem name to connect to.")
+    p_call.add_argument("--key", "-k", type=str, required=False, default="target_jog_vector", help="Key value to write the jog vector to.")
+    p_call.add_argument("--sys", "-s", type=str, required=False, default=None, help="Target subsystem UUID to connect to. If both name and sys are given, sys takes precedence.")
+    p_call.add_argument("--hz", "-f", type=float, required=False, default=None, help="Frequency to poll the keyboard and write jog values at. Default 2Hz.")
+    p_call.set_defaults(fn=keyboard_jog.main)
 
     return p
 
