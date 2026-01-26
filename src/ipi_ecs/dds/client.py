@@ -633,6 +633,9 @@ class _RemoteProperty:
         def __del(self):
             return
         
+        def try_set(self, value):
+            return self.__property.handle_set_value(value)
+        
         def set_type(self, p_type : PropertyTypeSpecifier):
             self.__property.set_type(p_type)
 
