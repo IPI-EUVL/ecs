@@ -311,12 +311,14 @@ class _EventHandler:
 
         def on_called(self, func):
             self.__handler.on_call(func)
+            return self #Enable chaining
 
         def get_name(self):
             return self.__handler.get_name()
         
         def set_types(self, paramerer_type, return_type):
             self.__handler.set_types(paramerer_type, return_type)
+            return self #Enable chaining
         
     class _IncomingEventHandle:
         def __init__(self, handler: "_EventHandler", e_uuid: uuid.UUID):
@@ -579,7 +581,7 @@ class _LocalProperty(_KVHandlerBase):
             self.__new_data_handler(self.__p_type.parse(value))
         
         self.__value = value
-        return (TRANSOP_STATE_OK, bytes())
+        return (TRANSOP_STATE_OK, value)
 
     def remote_get(self, requester: uuid.UUID):
         if not self.__readable:
