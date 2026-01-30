@@ -638,6 +638,9 @@ class _RemoteProperty:
         def try_set(self, value):
             return self.__property.handle_set_value(value)
         
+        def try_get(self):
+            return self.__property.handle_try_read()
+        
         def set_type(self, p_type : PropertyTypeSpecifier):
             self.__property.set_type(p_type)
 
@@ -735,6 +738,27 @@ class _RemoteProperty:
             return self.__p_type.parse(handle.get_value())
         except ValueError as exc:
             raise ValueError("Received value type incompatible with declared value type!") from exc
+        
+    def handle_try_read(self):
+        if not self.__readable:
+            raise ValueError("Property is write-only")
+        
+        handle = self.__subsystem.get_kv(self.__remote, self.__key, KVP_RET_HANDLE)
+
+        if handle is None:
+            return None
+
+        awaiter = mt_events.Awaiter()
+        def _ret(value: bytes):
+            try:
+                v = self.__p_type.parse(value)
+                awaiter.call(v)
+            except ValueError:
+                awaiter.throw(state=TRANSOP_STATE_REJ, reason="Received value type incompatible with declared value type!")
+
+        handle.then(_ret).catch(awaiter.throw)
+
+        return awaiter
     
     def get_handle(self):
         return self.__property_handler
