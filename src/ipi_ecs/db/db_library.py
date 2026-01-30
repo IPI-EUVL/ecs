@@ -337,7 +337,7 @@ class Entry:
 
         if self.__registry is not None:
             for filename, filetype in self.__registry.items():
-                file.write(f"{filename}:{filetype}")
+                file.write(f"{filename}:{filetype}\n")
 
         file.close()
 
