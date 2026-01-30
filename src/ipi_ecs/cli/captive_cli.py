@@ -134,7 +134,7 @@ class CaptiveCLITemplate:
     
     def __queue_thread(self, stop_flag: daemon.StopFlag):
         try:
-            print(f"{self.name}> ", end="", flush=True)
+            print(f"{self.name}: ", end="", flush=True)
             while stop_flag.run():
                 with contextlib.redirect_stdout(self.captured_output):
                     with contextlib.redirect_stderr(self.captured_output_stderr):
@@ -154,9 +154,10 @@ class CaptiveCLITemplate:
                         if not self.__out_queue.empty():
                             while not self.__out_queue.empty():
                                 output = self.__out_queue.get()
+                                print("\033[2K\r", end="")
                                 print(f"{self.name}> ", output, "", sep="")
 
-                            print(f"{self.name}> ", end="", flush=True)
+                            print(f"{self.name}: ", end="", flush=True)
 
         except KeyboardInterrupt:
             pass
