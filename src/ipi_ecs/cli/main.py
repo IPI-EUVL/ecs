@@ -544,6 +544,28 @@ def cmd_log_event_add(args: argparse.Namespace) -> int:
     print(eid)
     return 0
 
+def cmd_log_event_close(args: argparse.Namespace) -> int:
+    import uuid as _uuid
+    import time as _time
+
+    archive_dir = _resolve_archive_dir(args.log_dir, args.archive)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    idx = _open_index_for_archive_dir(archive_dir)
+
+    if args.event_id is None:
+        eids = idx.list_events(
+            open_only=True
+        )
+    else:
+        eids = [idx.get_event(args.event_id)]
+
+    for row in eids:
+        now = _time.time_ns()
+        idx.end_event(event_id=row.id, end_line=row.start_line, end_ts_ns=now, data_end={"source": "cli"})
+
+    print(eids)
+    return 0
+
 
 def cmd_log_event_list(args: argparse.Namespace) -> int:
     archive_dir = _resolve_archive_dir(args.log_dir, args.archive)
@@ -739,6 +761,13 @@ def build_parser() -> argparse.ArgumentParser:
     pea.add_argument("--log_dir", type=Path, default=None)
     pea.add_argument("--archive", default="current")
     pea.set_defaults(fn=cmd_log_event_add)
+
+    pea = sub_event.add_parser("close", help="Close all running events.")
+    pea.add_argument("end_line", type=int, nargs="?")
+    pea.add_argument("--event-id", dest="event_id", default=None)
+    pea.add_argument("--log_dir", type=Path, default=None)
+    pea.add_argument("--archive", default="current")
+    pea.set_defaults(fn=cmd_log_event_close)
 
     pel = sub_event.add_parser("list", help="List events.")
     pel.add_argument("--type", default=None)
