@@ -346,7 +346,7 @@ class Entry:
         folderpath = os.path.join(self.__library.get_base_path(), foldername)
         os.makedirs(folderpath, exist_ok=True)
 
-        return folderpath
+        return foldername
 
     def __create(self, name, desc):
         self.__uuid = uuid.uuid4()
