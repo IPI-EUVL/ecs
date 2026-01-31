@@ -53,7 +53,6 @@ def wait_for_event(awaiter: mt_events.Awaiter, s_uuid: uuid.UUID, timeout: float
     while not done and (time.monotonic() - begin) < timeout:
         time.sleep(0.1)
 
-        print(r_state, r_reason, r_value)
     if done:
         if r_value is not None:
             r_state = r_value.get_state(s_uuid)
