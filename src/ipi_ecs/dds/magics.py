@@ -54,3 +54,4 @@ E_NO_CACNE = b"Value has not been set yet!"
 E_EVENT_ABORTED = b"Event was aborted or timed out."
 
 OP_OK = b"Operation completed successfully"
+OP_IN_PROGRESS = b"Operation is in progress"
