@@ -123,14 +123,14 @@ def main(args: argparse.Namespace):
 
                     if state == magics.EVENT_IN_PROGRESS:
                         if s_uuid not in last_feedback and reason is not None:
-                            print(f"Subsystem {s_uuid} has begun processing event: {reason}")
+                            print(f"Subsystem {s_uuid} has begun processing event: {reason.decode('utf-8')}")
                         elif last_feedback.get(s_uuid) != reason and reason is not None:
-                            print(f"Subsystem {s_uuid} is still in progress: {reason}")
+                            print(f"Subsystem {s_uuid} is still in progress: {reason.decode('utf-8')}")
                     elif state == magics.EVENT_OK:
                         print(f"Subsystem {s_uuid} completed successfully.")
                     elif state == magics.EVENT_REJ:
                         if reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                            print(f"Subsystem {s_uuid} failed: {reason}")
+                            print(f"Subsystem {s_uuid} failed: {reason.decode('utf-8')}")
                         else:
                             pass# print(f"Subsystem {s_uuid} does not handle this event.")
 
@@ -143,7 +143,7 @@ def main(args: argparse.Namespace):
                     if state == magics.EVENT_OK:
                         print(f"Subsystem {s_uuid}: {m_client.get_event_handle().get_result(s_uuid)}")
                     elif reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                        print(f"Subsystem {s_uuid} did not complete successfully: {state} - {reason}")
+                        print(f"Subsystem {s_uuid} did not complete successfully: {state} - {reason.decode('utf-8')}")
 
                 break
 
