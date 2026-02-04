@@ -416,7 +416,7 @@ class ExperimentController:
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run start rejected by subsystem {s_uuid} due to {reason}.")
+                self.__abort_run(f"Run start rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
                 return
             
         for required in self.__require_subsystems:
@@ -463,7 +463,7 @@ class ExperimentController:
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run preinitiation rejected by subsystem {s_uuid} due to {reason}.")
+                self.__abort_run(f"Run preinitiation rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
                 return
         
         for required in self.__require_subsystems:
@@ -502,7 +502,7 @@ class ExperimentController:
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run initiation rejected by subsystem {s_uuid} due to {reason}.")
+                self.__abort_run(f"Run initiation rejected by subsystem {s_uuid} due to {reason.decode('utf-8')}.")
                 return
         
         for required in self.__require_subsystems:
