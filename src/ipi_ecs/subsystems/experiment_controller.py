@@ -245,11 +245,12 @@ class ExperimentController:
 
         self.__stop_request_handle = None
 
-        self.__settings = RunSettings()
-        self.__current_run = None
-
         self.__run_record = None
         self.__event_uuid = None
+
+        self.__settings_type = RunSettings
+        self.__settings = self.__settings_type()
+        self.__current_run = None
 
         self.__require_subsystems = [
            # uuids.UUID_TARGET_CONTROLLER,
@@ -556,6 +557,10 @@ class ExperimentController:
         self.__logger_sock.close()
 
         self.__run = False
+
+    def register_experiment_settings_type(self, settings_type: type[RunSettings]):
+        self.__settings_type = settings_type
+        self.__settings = self.__settings_type()
 
 class ExperimentReader:
     def __init__(self, data_path: str, exp_name: str):
