@@ -126,42 +126,42 @@ class CaptiveCLITemplate:
             pass
         except EOFError:
             pass
+        except Exception as e:
+            with contextlib.redirect_stdout(self.__stdout):
+                with contextlib.redirect_stderr(self.__stderr):
+                    print(f"Error in input thread: {e}")
+                    raise
+            raise
         finally:
             self.close()
 
         return 0
     
     def __queue_thread(self, stop_flag: daemon.StopFlag):
-        try:
-            print(f"{self.name}: ", end="", flush=True)
-            while stop_flag.run():
-                with contextlib.redirect_stdout(self.captured_output):
-                    with contextlib.redirect_stderr(self.captured_output_stderr):
-                        time.sleep(0.1)
-                        output = self.captured_output.getvalue() + self.captured_output_stderr.getvalue()
-                        if output.count("\n") != 0:
-                            self.captured_output.truncate(0)
-                            self.captured_output.seek(0)
-                            self.captured_output_stderr.truncate(0)
-                            self.captured_output_stderr.seek(0)
+        print(f"{self.name}: ", end="", flush=True)
+        while stop_flag.run():
+            with contextlib.redirect_stdout(self.captured_output):
+                with contextlib.redirect_stderr(self.captured_output_stderr):
+                    time.sleep(0.1)
+                    output = self.captured_output.getvalue() + self.captured_output_stderr.getvalue()
+                    if output.count("\n") != 0:
+                        self.captured_output.truncate(0)
+                        self.captured_output.seek(0)
+                        self.captured_output_stderr.truncate(0)
+                        self.captured_output_stderr.seek(0)
 
-                            for s_str in output.splitlines(keepends=False):
-                                self.__out_queue.put(s_str)
-                
-                with contextlib.redirect_stdout(self.__stdout):
-                    with contextlib.redirect_stderr(self.__stderr):
-                        if not self.__out_queue.empty():
-                            while not self.__out_queue.empty():
-                                output = self.__out_queue.get()
-                                print("\033[2K\r", end="")
-                                print(f"{self.name}> ", output, "", sep="")
+                        for s_str in output.splitlines(keepends=False):
+                            self.__out_queue.put(s_str)
+            
+            with contextlib.redirect_stdout(self.__stdout):
+                with contextlib.redirect_stderr(self.__stderr):
+                    if not self.__out_queue.empty():
+                        while not self.__out_queue.empty():
+                            output = self.__out_queue.get()
+                            print("\033[2K\r", end="")
+                            print(f"{self.name}> ", output, "", sep="")
 
-                            print(f"{self.name}: ", end="", flush=True)
-
-        except KeyboardInterrupt:
-            pass
-        finally:
-            pass
+                        print(f"{self.name}: ", end="", flush=True)
 
         return 0
     
