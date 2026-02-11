@@ -368,6 +368,9 @@ class _DDSServer:
             return True
         
         def on_event_return(self, e_uuid: uuid.UUID, s_uuid: uuid.UUID, status: int, value: bytes):
+            if self.__client is None:
+                return
+            
             self.__client.send(bytes([MAGIC_EVENT_RET]) + segment_bytes.encode([self.get_uuid().bytes, s_uuid.bytes, e_uuid.bytes, status.to_bytes(length=1, byteorder="big"), value]))
 
         def add_status_item(self, status : StatusItem):
