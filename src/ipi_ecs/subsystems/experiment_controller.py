@@ -6,6 +6,7 @@ import time
 import uuid
 import mt_events
 import segment_bytes
+import json
 
 from enum import Enum
 
@@ -23,12 +24,16 @@ from ipi_ecs.db.db_library import Library
 class RunSettings:
     data = {}
 
-    def encode(self):
-        return pickle.dumps(self)
+    def encode(self) -> str:
+        return json.dumps(self.data)
     
     @staticmethod
-    def decode(b_data: bytes):
-        return pickle.loads(b_data)
+    def decode(data: str):
+        load = json.loads(data)
+        obj = RunSettings()
+        obj.data = load
+
+        return obj
     
     def get_dict(self):
         return self.data.copy()
@@ -39,12 +44,37 @@ class RunState:
         self.__experiment_config = experiment_config
         self.__uuid = uuid.uuid4() if s_uuid is None else s_uuid
 
-    def encode(self):
-        return pickle.dumps(self)
+        self.__name = experiment_config.get_dict().get("name", None)
+        self.__description = experiment_config.get_dict().get("description", None)
+
+    def set_name(self, name: str):
+        self.__name = name
+
+    def set_description(self, description: str):
+        self.__description = description
+
+    def encode(self) -> str:
+        return json.dumps({
+            "type": self.__type,
+            "config": self.__experiment_config.encode(),
+            "uuid": str(self.__uuid),
+            "name": self.__name,
+            "description": self.__description,
+        })
+    
+    def get_name(self):
+        return self.__name
+    
+    def get_description(self):
+        return self.__description
     
     @staticmethod
-    def decode(b_data: bytes):
-        return pickle.loads(b_data)
+    def decode(data: str):
+        load = json.loads(data)
+        obj = RunState(load["type"], RunSettings.decode(load["config"]), uuid.UUID(load["uuid"]))
+        obj.set_name(load.get("name", None))
+        obj.set_description(load.get("description", None))
+        return obj
     
     def get_uuid(self):
         return self.__uuid
@@ -57,6 +87,8 @@ class RunState:
             "uuid": str(self.__uuid),
             "config": self.__experiment_config.get_dict(),
             "type": self.__type,
+            "name": self.__name,
+            "description": self.__description,
         }
     
     def get_type(self):
@@ -80,7 +112,10 @@ class RunRecord:
 
     @staticmethod
     def create(logger: LogClient, library: Library, state: RunState, settings: RunSettings, controller: "ExperimentController"):
-        entry = library.create_entry(f"Run {str(state.get_uuid())[-8:]}", f"Run on {time.ctime()}")
+        name = state.get_name() if state.get_name() is not None else f"Run {str(state.get_uuid())[-8:]}"
+        desc = state.get_description() if state.get_description() is not None else f"Run on {time.ctime()}"
+        entry = library.create_entry(name, desc)
+
         for k, v in settings.get_dict().items():
             entry.set_tag(k, v)
 
@@ -90,7 +125,9 @@ class RunRecord:
 
         event_uuid = logger.begin_event("RUN", f"{state.get_type()} {str(state.get_uuid())[-8:]}.", event_id=str(state.get_uuid()), subsystem=controller.name, run=state.get_dict(), exp_type=state.get_type())
 
-        res = entry.resource("run.dat", "run_state", "wb")
+        print(type(state))
+
+        res = entry.resource("run.json", "run_state", "w")
         res.write(state.encode())
         res.close()
 
@@ -100,14 +137,13 @@ class RunRecord:
             "version": RunRecord.CURRENT_DATA_VERSION,
         }
 
-        md_res = entry.resource("metadata.pkl", "metadata", "wb")
-        pickle.dump(metadata, md_res)
+        md_res = entry.resource("metadata.json", "metadata", "w")
+        json.dump(metadata, md_res)
         md_res.close()
 
         return RunRecord(logger, library, controller, state.get_uuid())
     
     def read(self, s_uuid: uuid.UUID):
-        print("Reading run record for UUID:", s_uuid)
         entry = self.__library.query({"tags": {"run": s_uuid.hex}}, limit=1)
 
         if entry is None:
@@ -115,17 +151,17 @@ class RunRecord:
         
         entry = entry[0]
         
-        res = entry.resource("run.dat", "run_state", "rb")
+        res = entry.resource("run.json", "run_state", "r")
         run = RunState.decode(res.read())
         res.close()
 
-        md_res = entry.resource("metadata.pkl", "metadata", "rb")
-        metadata = pickle.load(md_res)
+        md_res = entry.resource("metadata.json", "metadata", "r")
+        metadata = json.load(md_res)
         md_res.close()
 
         try:
-            md_end_res = entry.resource("end_metadata.pkl", "metadata", "rb")
-            end_metadata = pickle.load(md_end_res)
+            md_end_res = entry.resource("end_metadata.json", "metadata", "r")
+            end_metadata = json.load(md_end_res)
             md_end_res.close()
         except FileNotFoundError:
             end_metadata = None
@@ -163,15 +199,19 @@ class RunRecord:
             return self.__entry.get_tags()
         return {}
 
-    def write_end(self, status: str, reason: str):
+    def write_end(self, state: RunState, status: str, reason: str):
         if self.__entry is not None:
-            md_res = self.__entry.resource("end_metadata.pkl", "metadata", "wb")
-            pickle.dump({
+            md_res = self.__entry.resource("end_metadata.json", "metadata", "w")
+            json.dump({
                 "end_time": time.time(),
                 "end_reason": reason,
                 "status": status,
             }, md_res)
             md_res.close()
+
+            for k, v in state.get_dict().items():
+                if isinstance(v, (str, int, float)):
+                    self.__entry.set_tag(f"state_{k}", v)
 
             self.__entry.set_tag("status", status)
             self.__entry.set_tag("abort_reason", reason)
@@ -252,6 +292,8 @@ class ExperimentController:
         self.__settings = self.__settings_type()
         self.__current_run = None
 
+        self.__next_run_uuid = None
+
         self.__require_subsystems = [
            # uuids.UUID_TARGET_CONTROLLER,
         ]
@@ -291,7 +333,7 @@ class ExperimentController:
         return self.__data_thread_out_queue.get()
 
     def __create_run(self):
-        self.__current_run = RunState(self.exp_type, self.__settings)
+        self.__current_run = RunState(self.exp_type, self.__settings, s_uuid=self.__next_run_uuid)
         self.__run_record = self.__data_thread_enqueue(RunRecord.create, self.__logger, self.__library, self.__current_run, self.__settings, self)
 
     def __abort_run(self, reason: str):
@@ -344,14 +386,18 @@ class ExperimentController:
         self.stop_run(param.decode("utf-8"))
 
     def __try_start_run(self):
-        self.__logger.log("Attempting to begin new run...", level="DEBUG", l_type="EXP", subsystem=self.name)
+        self.__next_run_uuid = uuid.uuid4()
+        self.__create_run()
+
+        self.__logger.log("Attempting to begin new run: " + str(self.__next_run_uuid) + "...", level="DEBUG", l_type="EXP", subsystem=self.name)
 
         if self.__preinit_handle is not None or self.__init_handle is not None or self.__stop_handle is not None:
             self.__logger.log("Cannot start new run while another is in progress!", level="WARN", l_type="EXP", subsystem=self.name)
             return False, b"Cannot start new run while another is in progress!"
 
-        b_data = self.__settings.encode()
-        e_h = self.__can_start_event_provider.call(b_data, target=[])
+        b_s_data = self.__settings.encode().encode("utf-8")
+        b_state_data = self.__current_run.encode().encode("utf-8")
+        e_h = self.__can_start_event_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
         self.__can_start_event_handle = e_h
 
         e_h.after().then(self.__on_can_start_returned)
@@ -372,7 +418,7 @@ class ExperimentController:
         self.__stop_handle.after().then(self.__on_stop_returned, kwargs={"reason": reason})
 
     def __finalize_run(self, code: str, reason: str):
-        self.__data_thread_enqueue(self.__run_record.write_end, code, reason)
+        self.__data_thread_enqueue(self.__run_record.write_end, self.__current_run, code, reason)
         self.__run_record = None
 
         self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
@@ -438,8 +484,9 @@ class ExperimentController:
             
         self.__logger.log("All subsystems OK, starting run preparation.", level="DEBUG", l_type="EXP", subsystem=self.name, responses=log_responses, event="can_begin_run_ok", exp_type=self.exp_type)
         self.__start_run_handle.feedback(b"Preinitiation started.")
-
-        self.__preinit_handle = self.__preinit_provider.call(self.__settings.encode(), target=[])
+        b_s_data = self.__settings.encode().encode("utf-8")
+        b_state_data = self.__current_run.encode().encode("utf-8")
+        self.__preinit_handle = self.__preinit_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
         self.__preinit_handle.after().then(self.__on_preinit_returned)
 
     def __on_preinit_returned(self, handle: client._InProgressEvent._Handle):
@@ -472,12 +519,23 @@ class ExperimentController:
                 self.__abort_run(f"Required subsystem {required} did not respond to run preinitiation.")
                 return
             
+            state, reason = states[required]
+            if state != magics.EVENT_OK:
+                if reason == magics.E_DOES_NOT_HANDLE_EVENT or reason == magics.E_SUBSYSTEM_DISCONNECTED:
+                    self.__abort_run(f"Required subsystem {required} is disconnected or does not handle event, aborting run start.")
+                else:
+                    self.__abort_run(f"Required subsystem {required} responded with {reason.decode()}, aborting run start.")
+                return
+            
         self.__logger.log("All subsystems preinit OK, starting init.", level="DEBUG", l_type="EXP", subsystem=self.name, event="preinit_run", responses=log_responses, exp_type=self.exp_type)
         self.__start_run_handle.feedback(b"Preinit complete, starting init.")
 
         self.__preinit_handle = None
 
-        self.__init_handle = self.__init_provider.call(self.__settings.encode(), target=[])
+        b_s_data = self.__settings.encode().encode("utf-8")
+        b_state_data = self.__current_run.encode().encode("utf-8")
+
+        self.__init_handle = self.__init_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
         self.__init_handle.after().then(self.__on_init_returned)
 
     def __on_init_returned(self, handle: client._InProgressEvent._Handle):
@@ -511,10 +569,16 @@ class ExperimentController:
                 self.__abort_run(f"Required subsystem {required} did not respond to run initiation.")
                 return
             
+            state, reason = states[required]
+            if state != magics.EVENT_OK:
+                if reason == magics.E_DOES_NOT_HANDLE_EVENT or reason == magics.E_SUBSYSTEM_DISCONNECTED:
+                    self.__abort_run(f"Required subsystem {required} is disconnected or does not handle event, aborting run start.")
+                else:
+                    self.__abort_run(f"Required subsystem {required} responded with {reason.decode()}, aborting run start.")
+                return
+            
         self.__logger.log("All subsystems init OK, run started.", level="DEBUG", l_type="EXP", subsystem=self.name, exp_type=self.exp_type)
         self.__init_handle = None
-
-        self.__create_run()
 
         self.__logger.log(f"Began run {str(self.__current_run.get_uuid())[-8:]}.", level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), event="begin_run", responses=log_responses, exp_type=self.exp_type)
 
@@ -567,6 +631,92 @@ class ExperimentReader:
         self.__library = Library(data_path)
         self.__exp_name = exp_name
 
+    def locate_runs_by_name(self, name: str) -> list[RunRecord]:
+        q_tags = {
+            "experiment": self.__exp_name,
+        }
+        q_args = {
+            "name": name,
+            "tags": q_tags,
+        }
+
+        entries = self.__library.query(q_args, limit=None)
+        runs = []
+
+        for entry in entries:
+            try:
+                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                runs.append(data_manager)
+            except Exception as e:
+                print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
+        
+        return runs
+    
+    def locate_runs_by_timestamp(self, date_min: float = None, date_max: float = None) -> list[RunRecord]:
+        q_tags = {
+            "experiment": self.__exp_name,
+        }
+        q_args = {
+            "created_min": date_min,
+            "created_max": date_max,
+            "tags": q_tags,
+        }
+
+        entries = self.__library.query(q_args, limit=None)
+        runs = []
+
+        for entry in entries:
+            try:
+                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                runs.append(data_manager)
+            except Exception as e:
+                print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
+        
+        return runs
+    
+    def query(self, query: dict) -> list[RunRecord]:
+        q_tags = {
+            "experiment": self.__exp_name,
+        }
+        q_args = {
+            "tags": q_tags,
+        }
+        q_args.update(query)
+
+        entries = self.__library.query(q_args, limit=None)
+        runs = []
+
+        for entry in entries:
+            try:
+                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                runs.append(data_manager)
+            except Exception as e:
+                print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
+        
+        return runs
+    
+    def locate_run_by_uuid(self, r_uuid: uuid.UUID) -> RunRecord | None:
+        q_tags = {
+            "experiment": self.__exp_name,
+            "run": r_uuid.hex,
+        }
+        q_args = {
+            "tags": q_tags,
+        }
+
+        entries = self.__library.query(q_args, limit=1)
+
+        if len(entries) == 0:
+            return None
+        
+        entry = entries[0]
+        try:
+            data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+            return data_manager
+        except Exception as e:
+            print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
+            return None
+
     def list_runs(self, q_tags: dict = None, q_args: dict = None, limit: int = None) -> list[RunRecord]:
         """
         Query function for runs.
@@ -593,10 +743,11 @@ class ExperimentReader:
         runs = []
 
         for entry in entries:
-            print("Found run entry:", entry.get_uuid())
-
-            data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
-            runs.append(data_manager)
+            try:
+                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                runs.append(data_manager)
+            except Exception as e:
+                print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
         
         return runs
     

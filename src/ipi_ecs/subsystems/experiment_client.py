@@ -21,7 +21,7 @@ import ipi_ecs.core.tcp as tcp
 import ipi_ecs.db.db_library as db_library
 
 from ipi_ecs.logging.client import LogClient
-from ipi_ecs.subsystems.experiment_controller import ExperimentController, RunSettings
+from ipi_ecs.subsystems.experiment_controller import ExperimentController, RunSettings, RunState
 
 from chamber_ctl.subsystems import uuids
 from chamber_ctl.subsystems.target_motion import TargetMotion, TargetMotionConfig, TargetMotionProfile, MotionSegment, MotionState
@@ -46,7 +46,7 @@ class ExperimentClient:
 
         self.__settings_type = RunSettings
         
-    def _can_preinit(self, param: RunSettings) -> tuple[bool, bytes]:
+    def _can_preinit(self, settings: RunSettings, state: RunState) -> tuple[bool, bytes]:
         return True, OP_OK
     
     def _on_continue_state(self):
@@ -66,7 +66,7 @@ class ExperimentClient:
         self.__preinit_handle.ret(ret)
         self.__preinit_handle = None
 
-    def _can_start(self, param: RunSettings) -> tuple[bool, bytes]:
+    def _can_start(self, settings: RunSettings, state: RunState) -> tuple[bool, bytes]:
         return True, OP_OK
     
     def _on_start(self, handle) -> bytes:
@@ -99,10 +99,13 @@ class ExperimentClient:
             
     
     def __on_can_start_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
-        print("Can start exposure event called by:", s_uuid, param)
-        print(param)
-        print("Decoded param:", self.__settings_type.decode(param))
-        ok, reason = self._can_preinit(self.__settings_type.decode(param))
+        #print("Can start exposure event called by:", s_uuid, param)
+        #print(param)
+        decoded_param = segment_bytes.decode(param)
+        settings = self.__settings_type.decode(decoded_param[0].decode("utf-8"))
+        state = RunState.decode(decoded_param[1].decode("utf-8"))
+        #print("Decoded param:", settings, state)
+        ok, reason = self._can_start(settings, state)
 
         if not ok:
             print("Cannot start:", reason.decode("utf-8"))
@@ -112,7 +115,10 @@ class ExperimentClient:
         handle.ret(f"{self.__client_name} can start.".encode("utf-8"))
 
     def __on_preinit_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
-        ok, reason = self._can_preinit(self.__settings_type.decode(param))
+        decoded_param = segment_bytes.decode(param)
+        settings = self.__settings_type.decode(decoded_param[0].decode("utf-8"))
+        state = RunState.decode(decoded_param[1].decode("utf-8"))
+        ok, reason = self._can_preinit(settings, state)
 
         if not ok:
             print("Cannot start :", reason.decode("utf-8"))
@@ -130,9 +136,12 @@ class ExperimentClient:
         self.__preinit_handle.feedback(OP_IN_PROGRESS + ret)
 
     def __on_start_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
-        print("Start event called by:", s_uuid, param)
+        #print("Start event called by:", s_uuid, param)
+        decoded_param = segment_bytes.decode(param)
+        settings = self.__settings_type.decode(decoded_param[0].decode("utf-8"))
+        state = RunState.decode(decoded_param[1].decode("utf-8"))
 
-        ok, reason = self._can_start(self.__settings_type.decode(param))
+        ok, reason = self._can_start(settings, state)
 
         if not ok:
             print("Cannot start:", reason.decode("utf-8"))
@@ -148,13 +157,17 @@ class ExperimentClient:
         self.__start_handle.feedback(OP_IN_PROGRESS + ret)
 
     def __on_stop_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
-        print("Stop event called by:", s_uuid, param)
+        #print("Stop event called by:", s_uuid, param)
+        decoded_param = segment_bytes.decode(param)
+        end_state = int.from_bytes(decoded_param[0], 'big')
+        r_uuid = uuid.UUID(bytes=decoded_param[1]) if len(decoded_param[1]) > 0 else None
+        end_reason = decoded_param[2] if len(decoded_param[2]) > 0 else None
 
         ret = self._on_stop(handle)
 
         self.__stop_handle = handle
 
-        self.__logger.log(f"Stopping {self.__client_name}.", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="stop_exp")
+        self.__logger.log(f"Stopping {self.__client_name}, run: {r_uuid}, reason: {end_reason}, with state: {end_state}", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="stop_exp")
 
         handle.feedback(OP_IN_PROGRESS + ret)
 
@@ -163,7 +176,7 @@ class ExperimentClient:
 
         handle.add_event_handler(f"can_begin_{self.__exp_name}".encode("utf-8")).on_called(self.__on_can_start_event)
         handle.add_event_handler(f"preinit_{self.__exp_name}".encode("utf-8")).on_called(self.__on_preinit_event)
-        handle.add_event_handler(f"start_{self.__exp_name}".encode("utf-8")).on_called(self.__on_start_event)
+        handle.add_event_handler(f"init_{self.__exp_name}".encode("utf-8")).on_called(self.__on_start_event)
         handle.add_event_handler(f"stopped_{self.__exp_name}".encode("utf-8")).on_called(self.__on_stop_event)
 
         self.__xstate_publisher = handle.add_kv_handler(b"exp_state")
