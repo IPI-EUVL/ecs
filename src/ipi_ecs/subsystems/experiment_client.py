@@ -42,6 +42,8 @@ class ExperimentClient:
         self.__start_handle = None
         self.__stop_handle = None
 
+        self.__last_state_read = time.time()
+
         self.__xstate_publisher = None
 
         self.__settings_type = RunSettings
@@ -94,6 +96,8 @@ class ExperimentClient:
         if reason:
             ret = OP_OK + b": " + self.__client_name.encode() + reason
 
+        self.__current_run = None
+
         self.__stop_handle.ret(ret)
         self.__stop_handle = None
             
@@ -132,6 +136,8 @@ class ExperimentClient:
 
         assert self.__preinit_handle is None
 
+        self.__current_run = state
+
         self.__preinit_handle = handle
         self.__preinit_handle.feedback(OP_IN_PROGRESS + ret)
 
@@ -151,6 +157,7 @@ class ExperimentClient:
         
         self.__logger.log(f"Starting {self.__client_name}.", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="start_exp")
 
+        self.__last_state_read = time.time()
         ret = self._on_start(handle)
 
         self.__start_handle = handle
@@ -185,7 +192,11 @@ class ExperimentClient:
 
     def __on_xstate_read(self, requester):
         ok, reason = self._on_continue_state()
-        return segment_bytes.encode([ok.to_bytes(1, 'big'), reason])
+        self.__last_state_read = time.time()
+        return (TRANSOP_STATE_OK, segment_bytes.encode([ok.to_bytes(1, 'big'), reason]))
+    
+    def _has_timed_out(self, timeout: float = 1.0) -> bool:
+        return time.time() - self.__last_state_read > timeout
     
     def register_experiment_settings_type(self, settings_type: type[RunSettings]):
         self.__settings_type = settings_type
