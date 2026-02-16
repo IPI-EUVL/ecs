@@ -274,7 +274,7 @@ class Entry:
         return self.__resource(filename, mode)
 
     def list_resources(self):
-        return self.__registry.items()
+        return self.__registry.copy().items()
 
     def set_tag(self, key: str, value: str | float) -> None:
         self.__tags[key] = value
