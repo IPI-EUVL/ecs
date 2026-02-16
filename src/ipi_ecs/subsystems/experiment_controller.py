@@ -123,9 +123,7 @@ class RunRecord:
         entry.set_tag("run", state.get_uuid().hex)
         entry.set_tag("version", RunRecord.CURRENT_DATA_VERSION)
 
-        event_uuid = logger.begin_event("RUN", f"{state.get_type()} {str(state.get_uuid())[-8:]}.", event_id=str(state.get_uuid()), subsystem=controller.name, run=state.get_dict(), exp_type=state.get_type())
-
-        print(type(state))
+        event_uuid = logger.begin_event("RUN", name, event_id=str(state.get_uuid()), subsystem=controller.name, run=state.get_dict(), exp_type=state.get_type())
 
         res = entry.resource("run.json", "run_state", "w")
         res.write(state.encode())
@@ -146,7 +144,7 @@ class RunRecord:
     def read(self, s_uuid: uuid.UUID):
         entry = self.__library.query({"tags": {"run": s_uuid.hex}}, limit=1)
 
-        if entry is None:
+        if entry is None or len(entry) == 0:
             raise ValueError(f"Run with UUID {str(s_uuid)} not found in library.")
         
         entry = entry[0]
@@ -233,6 +231,13 @@ class RunRecord:
 class ExperimentController:
     RUN_OK = 0
     RUN_ABORT = 1
+
+    RUN_STATE_PREINIT = 0
+    RUN_STATE_INIT = 1
+    RUN_STATE_RUNNING = 2
+    RUN_STATE_STOPPING = 3
+    RUN_STATE_STOPPED = 4
+
     name = "ExperimentController"
     exp_type = "my_experiment"
 
@@ -285,6 +290,8 @@ class ExperimentController:
 
         self.__stop_request_handle = None
 
+        self.__state_kv = None
+
         self.__run_record = None
         self.__event_uuid = None
 
@@ -300,19 +307,124 @@ class ExperimentController:
 
         self.__library = None
 
-        self.__event_queue = mt_events.EventConsumer()
+        self.__states = dict()
 
         self.__data_thread_queue = queue.Queue()
         self.__data_thread_out_queue = queue.Queue()
 
+        self.__last_should_continue_check = 0
+
         self.__daemon = daemon.Daemon()
         self.__daemon.add(self.__data_thread)
+        self.__daemon.add(self.__thread)
 
         self.__daemon.start()
 
     def __thread(self, stop_flag: daemon.StopFlag):
         while stop_flag.run() and self.__run:
-            e = self.__event_queue.get(timeout=1)
+            if self.__can_start_event_handle is not None and not self.__can_start_event_handle.is_in_progress():
+                self.__on_can_start_returned()
+
+            if self.__has_timed_out(self.__can_start_event_handle, 30):
+                self.__abort_run("Run start request timed out.")
+            
+            if self.__preinit_handle is not None and not self.__preinit_handle.is_in_progress():
+                self.__on_preinit_returned()
+
+            if self.__has_timed_out(self.__preinit_handle, 30):
+                self.__abort_run("Preinit request timed out.")
+
+            if self.__init_handle is not None and not self.__init_handle.is_in_progress():
+                self.__on_init_returned()
+
+            if self.__has_timed_out(self.__init_handle, 30):
+                self.__abort_run("Init request timed out.")
+
+            if self.__stop_handle is not None and not self.__stop_handle.is_in_progress():
+                self.__on_stop_returned()
+
+            if self.__has_timed_out(self.__stop_handle, 30):
+                self.__abort_run("Stop request timed out.")
+
+            self.__update_state()
+
+            if self.__current_run is not None and self.__start_run_handle is None:
+                if time.time() - self.__last_should_continue_check < 1.0:
+                    continue
+
+                self.__last_should_continue_check = time.time()
+                should_continue, reason = self.__should_continue()
+                if not should_continue:
+                    self.__abort_run(reason)
+
+            time.sleep(0.1)
+
+    def __update_state(self):
+        if self.__state_kv is None:
+            return
+        
+        if self.__current_run is not None:
+            if self.__preinit_handle is not None:
+                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_PREINIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+            elif self.__init_handle is not None:
+                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_INIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+            elif self.__stop_handle is not None:
+                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+            else:
+                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_RUNNING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+        else:
+            self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPED.to_bytes(1, "big"), bytes()])
+
+    def __has_timed_out(self, event_handle: client._InProgressEvent._Handle, timeout: float) -> bool:
+        if event_handle is None:
+            return False
+        
+        t_initiated = event_handle.get_time_initiated()
+        last_update = event_handle.get_last_update()
+
+        now = time.time()
+
+        if now - t_initiated < timeout:
+            return False
+        
+        if now - last_update < timeout:
+            return False
+        
+        return True
+    
+    def __should_continue(self):
+        s = self.__subsystem.get_all()
+        for _handle, _state in s:
+            if _handle.get_info().get_uuid() not in self.__require_subsystems:
+                continue
+
+            if _state.get_status() != subsystem.SubsystemStatus.STATE_ALIVE:
+                return False, f"Required subsystem {_handle.get_info().get_uuid()} has died."
+
+        state_vs = self.__request_states()
+        for s_uuid in self.__require_subsystems:
+            if s_uuid not in state_vs:
+                return False, f"Required subsystem {s_uuid} did not provide state KV."
+
+            state, v = state_vs[s_uuid]
+
+            if state == OP_IN_PROGRESS:
+                return False, f"Attempt to fetch status of {s_uuid} has timed out."
+
+            if state != OP_OK:
+                return False, f"Attempt to fetch status of {s_uuid} returned non-OK({state}): {v if v is not None else 'No reason provided'}."
+            
+            b_ok, state = segment_bytes.decode(v)
+            ok = bool.from_bytes(b_ok, "big")
+
+            if not ok:
+                return False, f"Subsystem {s_uuid} reported not OK status: {state.decode('utf-8') if state is not None else 'No reason provided'}."
+            
+            self.__states[s_uuid] = state
+            
+        
+        return True, None
+                
 
     def __data_thread(self, stop_flag: daemon.StopFlag):
         self.__library = Library(self.data_path)
@@ -343,7 +455,6 @@ class ExperimentController:
             self.__start_run_handle = None
 
         if self.__can_start_event_handle is not None:
-            print("Aborting can start event handle.")
             self.__can_start_event_handle.abort()
             self.__can_start_event_handle = None
         
@@ -351,14 +462,12 @@ class ExperimentController:
             self.__logger.log(f"Cannot start run: {reason}", level="WARN", l_type="EXP", subsystem=self.name)
         else:
             self.__logger.log(f"Aborting run: {reason}", level="ERROR", l_type="EXP", subsystem=self.name)
-            print("Aborting preinit handle.")
 
         if self.__preinit_handle is not None:
             self.__preinit_handle.abort()
             self.__preinit_handle = None
 
         if self.__init_handle is not None:
-            print("Aborting init handle.")
             self.__init_handle.abort()
             self.__init_handle = None
 
@@ -400,7 +509,6 @@ class ExperimentController:
         e_h = self.__can_start_event_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
         self.__can_start_event_handle = e_h
 
-        e_h.after().then(self.__on_can_start_returned)
         return True, magics.OP_OK
 
     def stop_run(self, reason: str):
@@ -414,8 +522,8 @@ class ExperimentController:
         
         self.__logger.log(f"Stopping run {str(self.__current_run.get_uuid())[-8:]} : " + reason, level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
 
+        self.__stop_reason = reason
         self.__stop_handle = self.__stop_provider.call(segment_bytes.encode([self.RUN_OK.to_bytes(1, "big"), self.__current_run.get_uuid().bytes, reason.encode("utf-8")]), target=[])
-        self.__stop_handle.after().then(self.__on_stop_returned, kwargs={"reason": reason})
 
     def __finalize_run(self, code: str, reason: str):
         self.__data_thread_enqueue(self.__run_record.write_end, self.__current_run, code, reason)
@@ -424,9 +532,9 @@ class ExperimentController:
         self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
         self.__current_run = None
 
-    def __on_stop_returned(self, handle: client._InProgressEvent._Handle, reason: str):
-        self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} stopped: " + reason, level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, event="stop_run", exp_type=self.__current_run.get_type())
-        self.__finalize_run("STOPPED", reason)
+    def __on_stop_returned(self):
+        self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} stopped: " + self.__stop_reason, level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=self.__stop_reason, event="stop_run", exp_type=self.__current_run.get_type())
+        self.__finalize_run("STOPPED", self.__stop_reason)
         self.__run_record = None
 
         self.__current_run = None
@@ -440,15 +548,15 @@ class ExperimentController:
         return True, magics.OP_OK
 
 
-    def __on_can_start_returned(self, handle: client._InProgressEvent._Handle):
-        if handle.is_in_progress():
+    def __on_can_start_returned(self):
+        if self.__can_start_event_handle.is_in_progress():
             return
         
-        if handle.get_event_state() != EVENT_OK:
+        if self.__can_start_event_handle.get_event_state() != EVENT_OK:
             self.__abort_run("Run start request failed.")
             return
         
-        states = handle.get_states()
+        states = self.__can_start_event_handle.get_states()
 
         log_responses = {}
 
@@ -459,7 +567,7 @@ class ExperimentController:
             }
 
             if state == magics.EVENT_PENDING or state == magics.EVENT_IN_PROGRESS:
-                print("Subsystem", s_uuid, "still pending/in progress, aborting run start.")
+                self.__abort_run(f"Subsystem {s_uuid} has timed out.")
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
@@ -487,17 +595,16 @@ class ExperimentController:
         b_s_data = self.__settings.encode().encode("utf-8")
         b_state_data = self.__current_run.encode().encode("utf-8")
         self.__preinit_handle = self.__preinit_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
-        self.__preinit_handle.after().then(self.__on_preinit_returned)
 
-    def __on_preinit_returned(self, handle: client._InProgressEvent._Handle):
-        if handle.is_in_progress():
+    def __on_preinit_returned(self):
+        if self.__preinit_handle.is_in_progress():
             return
         
-        if handle.get_event_state() != EVENT_OK:
-            self.__abort_run("Run preinitiation failed.")
+        if self.__preinit_handle.get_event_state() != EVENT_OK:
+            self.__abort_run("Run preinitialization failed.")
             return
         
-        states = handle.get_states()
+        states = self.__preinit_handle.get_states()
 
         log_responses = {}
 
@@ -507,16 +614,16 @@ class ExperimentController:
                 "reason": reason.decode() if reason is not None else None,
             }
             if state == magics.EVENT_PENDING or state == magics.EVENT_IN_PROGRESS:
-                print("Subsystem", s_uuid, "still pending/in progress, aborting run start.")
+                self.__abort_run(f"Subsystem {s_uuid} has timed out.")
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run preinitiation rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
+                self.__abort_run(f"Run preinitialization rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
                 return
         
         for required in self.__require_subsystems:
             if required not in states:
-                self.__abort_run(f"Required subsystem {required} did not respond to run preinitiation.")
+                self.__abort_run(f"Required subsystem {required} did not respond to run preinitialization.")
                 return
             
             state, reason = states[required]
@@ -536,17 +643,16 @@ class ExperimentController:
         b_state_data = self.__current_run.encode().encode("utf-8")
 
         self.__init_handle = self.__init_provider.call(segment_bytes.encode([b_s_data, b_state_data]), target=[])
-        self.__init_handle.after().then(self.__on_init_returned)
 
-    def __on_init_returned(self, handle: client._InProgressEvent._Handle):
-        if handle.is_in_progress():
+    def __on_init_returned(self):
+        if self.__init_handle.is_in_progress():
             return
         
-        if handle.get_event_state() != EVENT_OK:
+        if self.__init_handle.get_event_state() != EVENT_OK:
             self.__abort_run("Run initiation failed.")
             return
         
-        states = handle.get_states()
+        states = self.__init_handle.get_states()
 
         log_responses = {}
 
@@ -598,6 +704,31 @@ class ExperimentController:
 
         handle.add_event_handler(b"prepare_" + self.exp_type.encode("utf-8")).on_called(self.__on_start_run_event)
         handle.add_event_handler(b"stop_" + self.exp_type.encode("utf-8")).on_called(self.__on_stop_run_event)
+
+        self.__state_kv = self.__subsystem.get_kv_property(b"experiment_state", False, True, True)
+
+    def __request_states(self):
+        rets = dict()
+
+        for req in self.__require_subsystems:
+            rets[req] = (OP_IN_PROGRESS, None)
+            self.__subsystem.get_kv(req, b"exp_state").then(lambda v, req=req: rets.update({req: (OP_OK, v)})).catch(lambda state, reason, req=req: rets.update({req: (state, reason)}))
+
+        timeout = time.time() + 5.0
+        while time.time() < timeout:
+            all_done = True
+            for req in self.__require_subsystems:
+                state, reason = rets[req]
+                if state == OP_IN_PROGRESS:
+                    all_done = False
+                    break
+            
+            if all_done:
+                break
+            
+            time.sleep(0.1)
+        
+        return rets
 
     def add_required_subsystem(self, s_uuid: uuid.UUID):
         if s_uuid not in self.__require_subsystems:
