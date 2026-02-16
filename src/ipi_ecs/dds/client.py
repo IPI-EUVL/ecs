@@ -174,6 +174,12 @@ class _InProgressEvent:
         def on_data(self):
             return self.__handle.on_data()
         
+        def get_time_initiated(self):
+            return self.__handle.get_t_initiated()
+        
+        def get_last_update(self):
+            return self.__handle.get_last_update()
+        
         def abort(self):
             self.__handle.abort()
 
@@ -188,6 +194,8 @@ class _InProgressEvent:
 
         self.__state = EVENT_PENDING
         self.__reason = None
+
+        self.__last_update = time.time()
 
         self.__on_data_event = mt_events.Event()
 
@@ -232,6 +240,8 @@ class _InProgressEvent:
                 raise ValueError("Returned value is incompatible with expected return type") from exc
         else:
             v = data
+
+        self.__last_update = time.time()
         
         self.__results[t_uuid] = (status, v)
         self.__on_data_event.call()
@@ -295,6 +305,9 @@ class _InProgressEvent:
 
     def get_t_initiated(self):
         return self.__t_initiated
+    
+    def get_last_update(self):
+        return self.__last_update
     
     def abort(self):
         self.__state = EVENT_ABORTED
@@ -1398,7 +1411,7 @@ class DDSClient:
     def get_registered(self):
         return self.__registered
     
-    def get_system(self, subsystem : "DDSClient._RegisteredSubsystem"):
+    def get_system(self, subsystem : "DDSClient._RegisteredSubsystem") -> list[tuple["_RemoteSubsystemHandle", SubsystemStatus]]:
         ret = []
         for info, state in self.__cached_subsystems.values():
             ret.append((_RemoteSubsystemHandle(self, info, subsystem), state))
