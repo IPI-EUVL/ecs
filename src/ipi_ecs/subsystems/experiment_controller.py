@@ -22,7 +22,10 @@ from ipi_ecs.logging.client import LogClient
 from ipi_ecs.db.db_library import Library
 
 class RunSettings:
-    data = {}
+    data = {
+        "name": "",
+        "description": "",
+    }
 
     def encode(self) -> str:
         return json.dumps(self.data)
@@ -37,6 +40,18 @@ class RunSettings:
     
     def get_dict(self):
         return self.data.copy()
+    
+    def set_attr(self, key: str, value):
+        self.data[key] = type(self.data[key])(value) if key in self.data else value
+
+    def get_attr(self, key: str, default=None):
+        return self.data.get(key, default)
+    
+    def get_keys(self):
+        return self.data.keys()
+    
+    def get_types(self):
+        return {k: type(v) for k, v in self.data.items()}
     
 class RunState:
     def __init__(self, e_type: str, experiment_config: RunSettings, s_uuid: uuid.UUID = None):
