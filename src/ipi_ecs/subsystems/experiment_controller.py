@@ -306,6 +306,7 @@ class ExperimentController:
         self.__stop_request_handle = None
 
         self.__state_kv = None
+        self.__run_kv = None
 
         self.__run_record = None
         self.__event_uuid = None
@@ -704,6 +705,21 @@ class ExperimentController:
         self.__start_run_handle.ret(b"Run successfully started with UUID: " + str(self.__run_record.get_state().get_uuid()).encode("utf-8"))
         self.__start_run_handle = None
 
+    def __handle_set(self, h, requester, v):
+        bytes_d = segment_bytes.decode(v)
+
+        if len(bytes_d) != 2:
+            return (magics.TRANSOP_STATE_REJ, b"Invalid data format for settings update.")
+        try:
+            self.__settings.set_attr(bytes_d[0].decode("utf-8"), bytes_d[1].decode("utf-8"))
+        except ValueError as e:
+            return (magics.TRANSOP_STATE_REJ, f"Invalid value for setting: {e}".encode("utf-8"))
+        return (magics.TRANSOP_STATE_OK, bytes())
+
+    def __handle_get(self, requester):
+        val = self.__settings.encode().encode("utf-8")
+        return (magics.TRANSOP_STATE_OK, val)
+
 
     def __on_got_subsystem(self, handle: client._RegisteredSubsystemHandle):
         self.__subsystem = handle
@@ -719,6 +735,10 @@ class ExperimentController:
         handle.add_event_handler(b"stop_" + self.exp_type.encode("utf-8")).on_called(self.__on_stop_run_event)
 
         self.__state_kv = self.__subsystem.get_kv_property(b"experiment_state", False, True, True)
+
+        set_kv_h = self.__subsystem.add_kv_handler(b"settings")
+        set_kv_h.on_set(self.__handle_set)
+        set_kv_h.on_get(self.__handle_get)
 
     def __request_states(self):
         rets = dict()
