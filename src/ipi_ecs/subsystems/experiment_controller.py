@@ -327,11 +327,10 @@ class ExperimentController:
         self.__data_thread_queue = queue.Queue()
         self.__data_thread_out_queue = queue.Queue()
 
-        self.__last_should_continue_check = 0
-
         self.__daemon = daemon.Daemon()
         self.__daemon.add(self.__data_thread)
         self.__daemon.add(self.__thread)
+        self.__daemon.add(self.__check_thread)
 
         self.__daemon.start()
 
@@ -363,16 +362,15 @@ class ExperimentController:
 
             self.__update_state()
 
-            if self.__current_run is not None and self.__start_run_handle is None:
-                if time.time() - self.__last_should_continue_check < 1.0:
-                    continue
+            time.sleep(0.1)
 
-                self.__last_should_continue_check = time.time()
+    def __check_thread(self, stop_flag: daemon.StopFlag):
+        while stop_flag.run() and self.__run:
+            if self.__current_run is not None and self.__start_run_handle is None and self.__stop_handle is None:
                 should_continue, reason = self.__should_continue()
                 if not should_continue:
                     self.__abort_run(reason)
-
-            time.sleep(0.1)
+            time.sleep(1)
 
     def __update_state(self):
         if self.__state_kv is None:
