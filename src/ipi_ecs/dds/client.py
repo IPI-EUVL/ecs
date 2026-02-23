@@ -648,11 +648,11 @@ class _RemoteProperty:
         def __del(self):
             return
         
-        def try_set(self, value):
-            return self.__property.handle_set_value(value)
+        def try_set(self, value, ret_type = KVP_RET_AWAIT):
+            return self.__property.handle_set_value(value, ret_type)
         
-        def try_get(self):
-            return self.__property.handle_try_read()
+        def try_get(self, ret_type = KVP_RET_AWAIT):
+            return self.__property.handle_try_read(ret_type)
         
         def set_type(self, p_type : PropertyTypeSpecifier):
             self.__property.set_type(p_type)
