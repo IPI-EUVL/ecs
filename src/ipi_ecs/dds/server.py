@@ -24,9 +24,10 @@ ENV_DDS_PORT = "IPI_ECS_DDS_PORT"
 
 class _DDSServer:
     class _ClientConnection:
-        def __init__(self, sock: tcp.TCPServerSocket, server: "_DDSServer"):
+        def __init__(self, sock: tcp.TCPServerSocket, server: "_DDSServer", logger : LogClient | None = None):
             self.__socket = sock
             self.__server = server
+            self.__logger = logger
 
             self.__event_consumer = mt_events.EventConsumer()
             
@@ -66,52 +67,57 @@ class _DDSServer:
             while not self.__socket.empty():
                 d = self.__socket.get(timeout=1)
 
-                if len(d) == 0:
-                    continue
+                try:
 
-                if d == bytes([MAGIC_HANDSHAKE_CLIENT]):
-                    if self.__handshake_received:
-                        raise IOError("Handshake on existing connection!")
+                    if len(d) == 0:
+                        continue
 
-                    #print("Handshake received from ", self.__socket.remote())
-                    self.__handshake_received = True
-                    self.__socket.put(bytes([MAGIC_HANDSHAKE_CLIENT]))
-                    self.__transactions.send_transaction(bytes([TRANSACT_REQ_UUID])).then(self.__transact_status_change)
+                    if d == bytes([MAGIC_HANDSHAKE_CLIENT]):
+                        if self.__handshake_received:
+                            raise IOError("Handshake on existing connection!")
 
-                if not self.__handshake_received:
-                    raise IOError("Invalid handshake received!")
+                        #print("Handshake received from ", self.__socket.remote())
+                        self.__handshake_received = True
+                        self.__socket.put(bytes([MAGIC_HANDSHAKE_CLIENT]))
+                        self.__transactions.send_transaction(bytes([TRANSACT_REQ_UUID])).then(self.__transact_status_change)
 
-                elif d[0] == MAGIC_TRANSACT:
-                    self.__transactions.received(d[1:])
-                
-                elif d[0] == MAGIC_REQ_SUBSCRIBE:
-                    s_uuid, key = segment_bytes.decode(d[1:])
-                    self.__server.subscribe(self.__uuid, uuid.UUID(bytes=s_uuid), key)
+                    if not self.__handshake_received:
+                        raise IOError("Invalid handshake received!")
 
-                elif d[0] == MAGIC_UPDATE_STATUS_ITEM:
-                    b_s_uuid, b_status = segment_bytes.decode(d[1:])
-                    status = StatusItem.decode(b_status)
-                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+                    elif d[0] == MAGIC_TRANSACT:
+                        self.__transactions.received(d[1:])
+                    
+                    elif d[0] == MAGIC_REQ_SUBSCRIBE:
+                        s_uuid, key = segment_bytes.decode(d[1:])
+                        self.__server.subscribe(self.__uuid, uuid.UUID(bytes=s_uuid), key)
 
-                    s = self.__server.find_subsystem(s_uuid=s_uuid)
-                    s.add_status_item(status)
+                    elif d[0] == MAGIC_UPDATE_STATUS_ITEM:
+                        b_s_uuid, b_status = segment_bytes.decode(d[1:])
+                        status = StatusItem.decode(b_status)
+                        s_uuid = uuid.UUID(bytes=b_s_uuid)
 
-                elif d[0] == MAGIC_CLEAR_STATUS_ITEM:
-                    b_s_uuid, b_status = segment_bytes.decode(d[1:])
-                    status = int.from_bytes(b_status, byteorder="big")
-                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+                        s = self.__server.find_subsystem(s_uuid=s_uuid)
+                        s.add_status_item(status)
 
-                    s = self.__server.find_subsystem(s_uuid=s_uuid)
-                    s.clear_status_item(status)
+                    elif d[0] == MAGIC_CLEAR_STATUS_ITEM:
+                        b_s_uuid, b_status = segment_bytes.decode(d[1:])
+                        status = int.from_bytes(b_status, byteorder="big")
+                        s_uuid = uuid.UUID(bytes=b_s_uuid)
 
-                elif d[0] == MAGIC_EVENT_FEEDBACK:
-                    b_s_uuid, b_e_uuid, b_status, b_value = segment_bytes.decode(d[1:])
-                    s_uuid = uuid.UUID(bytes=b_s_uuid)
-                    e_uuid = uuid.UUID(bytes=b_e_uuid)
-                    status = int.from_bytes(b_status, byteorder="big")
-                    value = b_value
+                        s = self.__server.find_subsystem(s_uuid=s_uuid)
+                        s.clear_status_item(status)
 
-                    self.__server.event_returned(s_uuid, e_uuid, status, value)
+                    elif d[0] == MAGIC_EVENT_FEEDBACK:
+                        b_s_uuid, b_e_uuid, b_status, b_value = segment_bytes.decode(d[1:])
+                        s_uuid = uuid.UUID(bytes=b_s_uuid)
+                        e_uuid = uuid.UUID(bytes=b_e_uuid)
+                        status = int.from_bytes(b_status, byteorder="big")
+                        value = b_value
+                        self.__server.event_returned(s_uuid, e_uuid, status, value)
+                except Exception as e:
+                    self.__logger.log(f"Exception while trying to decode client message: {d}", level="ERROR", l_type="SW", subsystem="DDS Server")
+                    self.__server.handle_exception(e)
+                    pass
                 
 
         def __transact_status_change(self, handle : transactions.TransactionManager.OutgoingTransactionHandle):
@@ -137,79 +143,86 @@ class _DDSServer:
             # pylint: disable=unbalanced-tuple-unpacking
             t = self.__transactions.get_incoming()
 
-            if t.get_data()[0] == TRANSACT_REG_SUBSYSTEM:
-                ok = self.__server.register_subsystem(self.__uuid, SubsystemInfo.decode(t.get_data()[1:]))
+            try:
 
-                if ok:
-                    t.ret(bytes())
+                if t.get_data()[0] == TRANSACT_REG_SUBSYSTEM:
+                    ok = self.__server.register_subsystem(self.__uuid, SubsystemInfo.decode(t.get_data()[1:]))
+
+                    if ok:
+                        t.ret(bytes())
+                    else:
+                        t.nak()
+                    return
+
+                elif t.get_data()[0] == TRANSACT_SET_KV:
+                    (t_uuid, s_uuid, t_k, t_v) = segment_bytes.decode(t.get_data()[1:])
+
+                    self.__server.set_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k, t_v)
+                    return
+
+                elif t.get_data()[0] == TRANSACT_GET_KV:
+                    (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
+
+                    self.__server.get_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
+                    return
+
+                elif t.get_data()[0] == TRANSACT_GET_KV_DESC:
+                    (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
+
+                    self.__server.get_kv_desc(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
+                    return
+
+                elif t.get_data()[0] == TRANSACT_RESOLVE:
+                    t_name, = segment_bytes.decode(t.get_data()[1:])
+
+                    s = self.__server.find_subsystem(name=t_name)
+                    if s is None:
+                        t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
+                        return
+                    
+                    t.ret(bytes([TRANSOP_STATE_OK]) + s.get_uuid().bytes)
+                    return
+
+                elif t.get_data()[0] == TRANSACT_GET_SUBSYSTEM:
+                    t_uuid, = segment_bytes.decode(t.get_data()[1:])
+
+                    s = self.__server.find_subsystem(s_uuid=uuid.UUID(bytes=t_uuid))
+                    if s is None:
+                        t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
+                        return
+                    
+                    t.ret(bytes([TRANSOP_STATE_OK]) + s.get_info().encode())
+                    return
+                
+                elif t.get_data()[0] == TRANSACT_CALL_EVENT:
+                    b_t_uuids, b_s_uuid, name, param = segment_bytes.decode(t.get_data()[1:])
+
+                    t_uuids = []
+                    for t_uuid in segment_bytes.decode(b_t_uuids):
+                        t_uuids.append(uuid.UUID(bytes=t_uuid))
+
+                    self.__server.call_event(t, uuid.UUID(bytes=b_s_uuid), t_uuids, name, param)
+                    return
+                
+                elif t.get_data()[0] == TRANSACT_GET_STATUS:
+                    b_s_uuid, = segment_bytes.decode(t.get_data()[1:])
+                    s_uuid = uuid.UUID(bytes=b_s_uuid)
+                    s = self.__server.find_subsystem(s_uuid=s_uuid)
+
+                    if s is None:
+                        t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
+                        return
+
+                    t.ret(bytes([TRANSOP_STATE_OK]) + s.get_status().encode())
+                    return
+                
                 else:
                     t.nak()
-                return
-
-            elif t.get_data()[0] == TRANSACT_SET_KV:
-                (t_uuid, s_uuid, t_k, t_v) = segment_bytes.decode(t.get_data()[1:])
-
-                self.__server.set_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k, t_v)
-                return
-
-            elif t.get_data()[0] == TRANSACT_GET_KV:
-                (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
-
-                self.__server.get_kv(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
-                return
-
-            elif t.get_data()[0] == TRANSACT_GET_KV_DESC:
-                (t_uuid, s_uuid, t_k) = segment_bytes.decode(t.get_data()[1:])
-
-                self.__server.get_kv_desc(t, uuid.UUID(bytes=s_uuid), uuid.UUID(bytes=t_uuid), t_k)
-                return
-
-            elif t.get_data()[0] == TRANSACT_RESOLVE:
-                t_name, = segment_bytes.decode(t.get_data()[1:])
-
-                s = self.__server.find_subsystem(name=t_name)
-                if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
-                    return
-                
-                t.ret(bytes([TRANSOP_STATE_OK]) + s.get_uuid().bytes)
-                return
-
-            elif t.get_data()[0] == TRANSACT_GET_SUBSYSTEM:
-                t_uuid, = segment_bytes.decode(t.get_data()[1:])
-
-                s = self.__server.find_subsystem(s_uuid=uuid.UUID(bytes=t_uuid))
-                if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
-                    return
-                
-                t.ret(bytes([TRANSOP_STATE_OK]) + s.get_info().encode())
-                return
-            
-            elif t.get_data()[0] == TRANSACT_CALL_EVENT:
-                b_t_uuids, b_s_uuid, name, param = segment_bytes.decode(t.get_data()[1:])
-
-                t_uuids = []
-                for t_uuid in segment_bytes.decode(b_t_uuids):
-                    t_uuids.append(uuid.UUID(bytes=t_uuid))
-
-                self.__server.call_event(t, uuid.UUID(bytes=b_s_uuid), t_uuids, name, param)
-                return
-            
-            elif t.get_data()[0] == TRANSACT_GET_STATUS:
-                b_s_uuid, = segment_bytes.decode(t.get_data()[1:])
-                s_uuid = uuid.UUID(bytes=b_s_uuid)
-                s = self.__server.find_subsystem(s_uuid=s_uuid)
-
-                if s is None:
-                    t.ret(bytes([TRANSOP_STATE_REJ]) + E_SUBSYSTEM_NOT_FOUND)
-                    return
-
-                t.ret(bytes([TRANSOP_STATE_OK]) + s.get_status().encode())
-                return
-            
-            else:
+            except Exception as e:
+                self.__l
+                self.__server.handle_exception(e)
                 t.nak()
+                pass
 
         def __flush_transponder(self):
             while not self.__transactions_msg_out_queue.empty():
@@ -440,7 +453,7 @@ class _DDSServer:
     def __new_client(self):
         while not self.__client_queue.empty():
             sock = self.__client_queue.get()
-            client = self._ClientConnection(sock, self)
+            client = self._ClientConnection(sock, self, self.__logger)
             self.__log(f"Client {client.get_uuid()} has connected", level="DEBUG", event="CONN")
             self.__clients.append(client)
 
