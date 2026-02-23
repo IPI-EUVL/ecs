@@ -505,6 +505,10 @@ class ExperimentController:
 
     def __on_stop_run_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         print("Stop run event called by:", s_uuid, param)
+        if self.__current_run is None:
+            handle.fail(b"No run to stop!")
+            return
+
         self.__stop_request_handle = handle
         self.stop_run(param.decode("utf-8"))
 
