@@ -709,7 +709,7 @@ class _RemoteProperty:
         
         self.__value = value
     
-    def handle_set_value(self, value):
+    def handle_set_value(self, value, ret_type = KVP_RET_AWAIT):
         if not self.__writable:
             raise ValueError("Property is read-only")
 
@@ -719,7 +719,7 @@ class _RemoteProperty:
         except ValueError as exc:
             raise ValueError("Property type is incompatible with provided value") from exc
         
-        return self.__subsystem.get_client().set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid(), KVP_RET_AWAIT)
+        return self.__subsystem.get_client().set_kv(self.__key, encoded, self.__remote, self.__subsystem.get_uuid(), ret_type)
 
     def handle_get_value(self):
         if not self.__readable:
@@ -752,11 +752,11 @@ class _RemoteProperty:
         except ValueError as exc:
             raise ValueError("Received value type incompatible with declared value type!") from exc
         
-    def handle_try_read(self):
+    def handle_try_read(self, ret_type = KVP_RET_AWAIT):
         if not self.__readable:
             raise ValueError("Property is write-only")
         
-        handle = self.__subsystem.get_kv(self.__remote, self.__key, KVP_RET_HANDLE)
+        handle = self.__subsystem.get_kv(self.__remote, self.__key, ret_type)
 
         if handle is None:
             return None
