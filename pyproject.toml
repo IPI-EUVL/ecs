@@ -16,7 +16,6 @@ dependencies = [
   "python-dateutil>=2.9",
   "rich>=13",
   "textual>=6.2",
-  "pywin32>=305",
 ]
 
 license = { text = "MIT" }
@@ -48,6 +47,9 @@ dev = [
   "pytest>=8",
   "ruff>=0.6",
   "mypy>=1.10",
+]
+win = [
+  "pywin32>=305",
 ]
 
 [tool.pylint.MAIN]
