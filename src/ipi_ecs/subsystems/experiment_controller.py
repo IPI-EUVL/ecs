@@ -548,6 +548,12 @@ class ExperimentController:
         self.__run_record = None
 
         self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
+        try:
+            print(f"Setting stop KV for run {str(self.__current_run.get_uuid())[-8:]} with code '{code}' and reason '{reason}'")
+            self.__stop_kv.value = segment_bytes.encode([self.__current_run.get_uuid().bytes, code.encode("utf-8"), reason.encode("utf-8")])
+        except Exception as e:
+            self.__logger.log(f"Failed to set stop KV for run {str(self.__current_run.get_uuid())[-8:]}: {e}", level="ERROR", l_type="EXP", subsystem=self.name)
+
         self.__current_run = None
 
     def __on_stop_returned(self):
@@ -739,6 +745,7 @@ class ExperimentController:
         handle.add_event_handler(b"stop_" + self.exp_type.encode("utf-8")).on_called(self.__on_stop_run_event)
 
         self.__state_kv = self.__subsystem.get_kv_property(b"experiment_state", False, True, True)
+        self.__stop_kv = self.__subsystem.get_kv_property(b"run_finalized", False, True, True)
 
         set_kv_h = self.__subsystem.add_kv_handler(b"settings")
         set_kv_h.on_set(self.__handle_set)

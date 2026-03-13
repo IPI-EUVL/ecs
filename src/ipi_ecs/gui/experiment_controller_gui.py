@@ -39,6 +39,8 @@ class ExperimentInterface:
         self.__status_kv = None
         self.__settings_kv = None
 
+        self.__stopped_run_queue = Queue()
+
         def _on_ready():
             if self.__did_config:
                 return
@@ -53,15 +55,39 @@ class ExperimentInterface:
         self.__client.when_ready().then(_on_ready)
 
     def __on_got_subsystem(self, handle: client._RegisteredSubsystemHandle):
+        print("Got subsystem handle, configuring...")
         self.__subsystem = handle
 
         self.__status_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"experiment_state", True, True, False))
         self.__status_kv.on_new_data_received(self.__on_status_update)
 
+        self.__stop_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"run_finalized", True, True, False))
+        self.__stop_kv.on_new_data_received(self.__on_stop_update)
+
         self.__settings_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"settings", False, True, True))
 
         self.__start_experiment_event_sender = handle.add_event_provider(f"prepare_{self.exp_type}".encode("utf-8"))
         self.__stop_experiment_event_sender = handle.add_event_provider(f"stop_{self.exp_type}".encode("utf-8"))
+
+    def __on_stop_update(self, n_stop: bytes):
+        b_stop = segment_bytes.decode(n_stop)
+        if len(b_stop) != 3:
+            print("Invalid stop update received: ", b_stop)
+            return
+        
+        r_uuid = uuid.UUID(bytes=b_stop[0])
+        code = b_stop[1].decode("utf-8")
+        reason = b_stop[2].decode("utf-8")
+
+        print(f"Received stop update for run {r_uuid} with code '{code}' and reason '{reason}'")
+
+        self.__stopped_run_queue.put((r_uuid, code, reason))
+
+    def get_stopped_run(self, timeout=None, block=False):
+        try:
+            return self.__stopped_run_queue.get(timeout=timeout, block=block)
+        except Empty:
+            return None
 
     def __on_status_update(self, n_status: bytes):
         b_status = segment_bytes.decode(n_status)
@@ -221,7 +247,7 @@ class ExperimentControllerGUI:
         self.root.after(500, self.__updater)
 
     def __update_values(self):
-        if self.__op_event_handle is None and self.__op_transop_handle is None:
+        if (self.__op_event_handle is None and self.__op_transop_handle is None) or self.__current_op in ["Starting", "Stopping"]:
             if self.__itf.get_experiment() is not None:
                 exp = self.__itf.get_experiment()
                 state_str = {ExperimentController.RUN_STATE_PREINIT: "Preinitialization", ExperimentController.RUN_STATE_INIT: "Initialization", ExperimentController.RUN_STATE_RUNNING: "Running", ExperimentController.RUN_STATE_STOPPED: "Stopped"}.get(self.__itf.get_state(), "Unknown")
@@ -273,6 +299,11 @@ class ExperimentControllerGUI:
                     self.__alert(f"Operation '{self.__current_op}' failed: {result}")
 
                 self.__op_transop_handle = None
+
+        stopped_run = self.__itf.get_stopped_run()
+        if stopped_run is not None:
+            r_uuid, code, reason = stopped_run
+            self.__alert(f"Run {r_uuid} stopped with code '{code}' and reason '{reason}'")
 
     def __alert(self, message: str):
         alert_window = tk.Toplevel(self.root)
