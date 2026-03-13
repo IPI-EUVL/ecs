@@ -23,11 +23,6 @@ import ipi_ecs.db.db_library as db_library
 from ipi_ecs.logging.client import LogClient
 from ipi_ecs.subsystems.experiment_controller import ExperimentController, RunSettings, RunState
 
-from chamber_ctl.subsystems import uuids
-from chamber_ctl.subsystems.target_motion import TargetMotion, TargetMotionConfig, TargetMotionProfile, MotionSegment, MotionState
-from chamber_ctl.subsystems.ljs_target_motion import LJSerialTargetMotion
-from chamber_ctl.subsystems.exposure_controller import ExposureSettings
-
 class ExperimentClient:
     EXP_IN_PROGRESS = b"Experiment is in progress."
 
