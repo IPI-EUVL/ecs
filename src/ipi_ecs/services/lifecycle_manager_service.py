@@ -35,7 +35,7 @@ class LifecycleManagerService(win32serviceutil.ServiceFramework):
     _svc_display_name_ = "ipi-ecs Lifecycle Manager Service"
     _svc_description_ = "Lifecycle Manager Service for ipi-ecs"
 
-    def __init__(self, args):
+    def __init__(self, args, uuid: uuid.UUID | None = None):
         self.__logger_sock = None
         self.__logger = None
         self._lifecycle_manager = None
@@ -45,7 +45,7 @@ class LifecycleManagerService(win32serviceutil.ServiceFramework):
 
         self.is_running = True
 
-        self.__uuid = uuid.uuid4()
+        self.__uuid = uuid or uuid.uuid4()
 
     def SvcStop(self):
         _log_to_file("LifecycleManagerService.SvcStop")
