@@ -1198,6 +1198,11 @@ class LifecycleGUI:
 		selected_iid = None
 		for row in self.__snapshot["rows"]:
 			runtime = row["runtime"]
+			is_managed = row["managed"]
+			process_text = "Y" if (is_managed and runtime.process_running) else ("" if not is_managed else "N")
+			init_text = "Y" if (is_managed and runtime.initializing) else ("" if not is_managed else "N")
+			started_text = "Y" if (is_managed and runtime.started) else ("" if not is_managed else "N")
+			status_text = row["status_text"] if is_managed else ""
 			iid = self.__tree.insert(
 				"",
 				tk.END,
@@ -1206,10 +1211,10 @@ class LifecycleGUI:
 					row["uuid6"],
 					"Y" if row["connected"] else "N",
 					"Y" if row["managed"] else "N",
-					"Y" if runtime.process_running else "N",
-					"Y" if runtime.initializing else "N",
-					"Y" if runtime.started else "N",
-					row["status_text"],
+					process_text,
+					init_text,
+					started_text,
+					status_text,
 				),
 			)
 			self.__tree_uuid_by_iid[iid] = row["uuid"]
