@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 import time
 import math
 import threading
@@ -167,14 +168,26 @@ class ExperimentControllerGUI:
 
         self.__settings_entries = []
         self.__update_queue = Queue()
+        self.__applied_settings = {}
+        self.__settings_update_attempted_values = {}
         
         #GUI setup 
         self.__initialize_component()
+        self.__applied_settings = self.__capture_entry_values()
         self.handle_window()
 
         self.__op_event_handle = None
         self.__op_transop_handle = None
         self.__current_op = None
+        self.__settings_update_active = False
+        self.__settings_update_total = 0
+        self.__settings_update_completed = 0
+        self.__settings_update_errors = []
+        self.__settings_update_active_key = None
+        self.__settings_update_dialog = None
+        self.__settings_update_status_label = None
+        self.__settings_update_progress_bar = None
+        self.__settings_update_close_button = None
 
         self.__status_style = ttk.Style()
         self.__status_style.configure("Status.TLabel", font=("Arial", 30), width=20, anchor=tk.CENTER)
@@ -232,7 +245,7 @@ class ExperimentControllerGUI:
     def __update_thread(self, stop_flag: daemon.StopFlag):
         while stop_flag.run():
             try:
-                time.sleep(0.1) # small sleep to prevent busy waiting
+                time.sleep(0.01) # small sleep to prevent busy waiting
                 if self.__op_transop_handle is not None:
                     continue
 
@@ -266,11 +279,7 @@ class ExperimentControllerGUI:
 
             for key, entry, type_ in self.__settings_entries:
                 value = exp_dict.get(key)
-                entry.delete(0, tk.END)
-                time.sleep(0.01) # small delay to ensure GUI updates
-                entry.insert(0, str(value))
-                time.sleep(0.01) # small delay to ensure GUI updates
-
+                self.__set_entry_value(entry, value)
                 entry.config(state=tk.DISABLED)
 
             self.__uuid_label.config(text=f"Run UUID: ...{str(self.__itf.get_experiment_uuid())[-8:]}")
@@ -280,10 +289,13 @@ class ExperimentControllerGUI:
 
             self.__uuid_label.config(text="Run UUID: None")
 
+        self.__update_settings_progress_dialog()
+
         self.__update_gui_enabled()
 
         if self.__op_event_handle is not None:
             if not self.__op_event_handle.is_in_progress():
+                print(f"Operation '{self.__current_op}' completed, result: {self.__op_event_handle.get_result(self.__itf.get_controller_uuid())}, state: {self.__op_event_handle.get_state(self.__itf.get_controller_uuid())}")
                 result = self.__op_event_handle.get_result(self.__itf.get_controller_uuid())
                 state = self.__op_event_handle.get_state(self.__itf.get_controller_uuid())
 
@@ -294,9 +306,13 @@ class ExperimentControllerGUI:
 
         if self.__op_transop_handle is not None:
             if self.__op_transop_handle.get_state() != client.TRANSOP_STATE_PENDING:
-                if self.__op_transop_handle.get_state() == client.TRANSOP_STATE_REJ:
-                    result = self.__op_transop_handle.get_reason()
-                    self.__alert(f"Operation '{self.__current_op}' failed: {result}")
+                print(f"Operation '{self.__current_op}' completed, state: {self.__op_transop_handle.get_state()}, reason: {self.__get_transop_error_message(self.__op_transop_handle)}, result: {self.__op_transop_handle.get_value()}")
+                error_message = self.__get_transop_error_message(self.__op_transop_handle)
+
+                if self.__settings_update_active:
+                    self.__record_settings_update_result(error_message)
+                elif error_message is not None:
+                    self.__alert(f"Operation '{self.__current_op}' failed: {error_message}")
 
                 self.__op_transop_handle = None
 
@@ -313,8 +329,144 @@ class ExperimentControllerGUI:
         ok_button = ttk.Button(alert_window, text="OK", command=alert_window.destroy)
         ok_button.pack(pady=5)
 
+    def __set_entry_value(self, entry: ttk.Entry, value):
+        state = str(entry.cget("state"))
+        if state != tk.NORMAL:
+            entry.config(state=tk.NORMAL)
+
+        entry.delete(0, tk.END)
+        entry.insert(0, "" if value is None else str(value))
+
+        if state != tk.NORMAL:
+            entry.config(state=state)
+
+    def __capture_entry_values(self):
+        values = {}
+        for key, entry, _type in self.__settings_entries:
+            values[key] = entry.get()
+        return values
+
+    def __has_unapplied_settings(self):
+        current_values = self.__capture_entry_values()
+        for key, value in current_values.items():
+            if str(self.__applied_settings.get(key, "")) != str(value):
+                return True
+        return False
+
+    def __get_transop_error_message(self, op_handle):
+        state = op_handle.get_state()
+        if state == client.TRANSOP_STATE_OK:
+            return None
+
+        reason = op_handle.get_reason()
+        if isinstance(reason, bytes):
+            reason = reason.decode("utf-8", errors="replace")
+        elif reason is not None:
+            reason = str(reason)
+
+        if reason is None or reason.strip() == "":
+            if state == client.TRANSOP_STATE_REJ:
+                reason = "Request rejected."
+            elif state == client.TRANSOP_STATE_PENDING:
+                reason = "Request did not complete."
+            else:
+                reason = f"Request failed with state {state}."
+
+        return reason
+
+    def __create_settings_progress_dialog(self):
+        if self.__settings_update_dialog is not None and self.__settings_update_dialog.winfo_exists():
+            self.__settings_update_dialog.lift()
+            self.__settings_update_dialog.focus_force()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Updating Settings")
+        dialog.transient(self.root)
+        dialog.geometry("700x360")
+        dialog.minsize(620, 280)
+        dialog.resizable(True, True)
+        dialog.protocol("WM_DELETE_WINDOW", self.__on_settings_update_dialog_close)
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self.__settings_update_status_label = ttk.Label(frame, justify=tk.LEFT, anchor=tk.NW, wraplength=660)
+        self.__settings_update_status_label.pack(fill=tk.BOTH, expand=True)
+
+        self.__settings_update_progress_bar = ttk.Progressbar(frame, mode="determinate", maximum=max(self.__settings_update_total, 1))
+        self.__settings_update_progress_bar.pack(fill=tk.X, pady=(10, 0))
+
+        self.__settings_update_close_button = ttk.Button(frame, text="Close", command=self.__close_settings_update_dialog, state=tk.DISABLED)
+        self.__settings_update_close_button.pack(anchor=tk.E, pady=(10, 0))
+
+        self.__settings_update_dialog = dialog
+        self.__update_settings_progress_dialog()
+
+    def __on_settings_update_dialog_close(self):
+        if self.__settings_update_active:
+            return
+        self.__close_settings_update_dialog()
+
+    def __close_settings_update_dialog(self):
+        if self.__settings_update_dialog is not None and self.__settings_update_dialog.winfo_exists():
+            self.__settings_update_dialog.destroy()
+
+        self.__settings_update_dialog = None
+        self.__settings_update_status_label = None
+        self.__settings_update_progress_bar = None
+        self.__settings_update_close_button = None
+        self.__settings_update_total = 0
+        self.__settings_update_completed = 0
+        self.__settings_update_errors = []
+        self.__settings_update_active_key = None
+
+    def __update_settings_progress_dialog(self):
+        if self.__settings_update_status_label is None or self.__settings_update_progress_bar is None:
+            return
+
+        active_name = self.friendly_type_name(self.__settings_update_active_key) if self.__settings_update_active_key is not None else None
+        if self.__settings_update_active:
+            status_lines = [f"Updated {self.__settings_update_completed} of {self.__settings_update_total} settings."]
+            status_lines.append(f"Current: {active_name}" if active_name is not None else "Waiting for next setting...")
+        elif self.__settings_update_total > 0:
+            success_count = self.__settings_update_total - len(self.__settings_update_errors)
+            status_lines = [f"Updated {success_count} of {self.__settings_update_total} settings."]
+            if self.__settings_update_errors:
+                status_lines.extend(self.__settings_update_errors)
+            else:
+                status_lines.append("All settings updated successfully.")
+        else:
+            status_lines = []
+
+        self.__settings_update_status_label.config(text="\n".join(status_lines))
+        self.__settings_update_progress_bar.configure(maximum=max(self.__settings_update_total, 1), value=min(self.__settings_update_completed, self.__settings_update_total))
+
+        if self.__settings_update_dialog is not None and self.__settings_update_dialog.winfo_exists():
+            self.__settings_update_dialog.update_idletasks()
+
+        if self.__settings_update_close_button is not None:
+            close_state = tk.DISABLED if self.__settings_update_active else tk.NORMAL
+            self.__settings_update_close_button.config(state=close_state)
+
+    def __record_settings_update_result(self, error_message: str | None):
+        active_key = self.__settings_update_active_key
+        if error_message is not None:
+            key_name = self.friendly_type_name(active_key) if active_key is not None else "Unknown setting"
+            self.__settings_update_errors.append(f"{key_name}: {error_message}")
+        elif active_key is not None and active_key in self.__settings_update_attempted_values:
+            self.__applied_settings[active_key] = self.__settings_update_attempted_values[active_key]
+
+        self.__settings_update_completed += 1
+        self.__settings_update_active_key = None
+
+        if self.__settings_update_completed >= self.__settings_update_total:
+            self.__settings_update_active = False
+            self.__current_op = None
+            self.__settings_update_attempted_values = {}
+
     def __update_gui_enabled(self):
-        should_enable_controls = self.__op_event_handle is None and self.__op_transop_handle is None
+        should_enable_controls = self.__op_event_handle is None and self.__op_transop_handle is None and not self.__settings_update_active
         should_enable_data = self.__itf.get_experiment() is None and should_enable_controls
 
         self.__set_controls_enabled(should_enable_controls)
@@ -331,14 +483,38 @@ class ExperimentControllerGUI:
             child.config(state=state)
 
     def __on_update_settings(self):
+        if self.__settings_update_active:
+            self.__create_settings_progress_dialog()
+            return
+
+        updates = []
         for key, entry, type_ in self.__settings_entries:
             value_str = entry.get()
+            updates.append((key, value_str))
+
+        if len(updates) == 0:
+            return
+
+        self.__settings_update_active = True
+        self.__settings_update_total = len(updates)
+        self.__settings_update_completed = 0
+        self.__settings_update_errors = []
+        self.__settings_update_active_key = None
+        self.__settings_update_attempted_values = {k: v for k, v in updates}
+        self.__current_op = "Updating settings"
+        self.__create_settings_progress_dialog()
+
+        for key, value_str in updates:
             self.__update_queue.put((key, value_str))
 
     def __do_update_setting(self, key: str, value_str: str):
         print(f"Updating setting {key} to {value_str}")
+        self.__settings_update_active_key = key
         self.__op_transop_handle = self.__itf.set_kw(key, value_str, client.KVP_RET_HANDLE)
-        self.__current_op = "Updating setting " + key
+        self.__current_op = "Updating setting " + self.friendly_type_name(key)
+
+        if self.__op_transop_handle is None:
+            self.__record_settings_update_result("Settings KV not available yet.")
 
     def handle_window(self):
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -348,6 +524,20 @@ class ExperimentControllerGUI:
         self.__daemon.stop()
 
     def __on_start_experiment(self):
+        if self.__settings_update_active:
+            self.__create_settings_progress_dialog()
+            return
+
+        if self.__itf.get_experiment() is None and self.__has_unapplied_settings():
+            start_anyway = messagebox.askyesno(
+                "Unapplied Settings",
+                "There are unapplied experiment setting changes.\n\nStart the experiment anyway?",
+                parent=self.root,
+                icon=messagebox.WARNING,
+            )
+            if not start_anyway:
+                return
+
         self.__op_event_handle = self.__itf.start_experiment()
         self.__current_op = "Starting"
 

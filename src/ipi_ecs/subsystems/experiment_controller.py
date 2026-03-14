@@ -42,6 +42,9 @@ class RunSettings:
         return self.data.copy()
     
     def set_attr(self, key: str, value):
+        if not key in self.data:
+            raise ValueError(f"Key '{key}' not found in RunSettings.")
+        
         self.data[key] = type(self.data[key])(value) if key in self.data else value
 
     def get_attr(self, key: str, default=None):
