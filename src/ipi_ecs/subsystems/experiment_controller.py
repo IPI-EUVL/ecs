@@ -550,6 +550,10 @@ class ExperimentController:
         self.__data_thread_enqueue(self.__run_record.write_end, self.__current_run, code, reason)
         self.__run_record = None
 
+        if self.__current_run is None:
+            self.__logger.log(f"Finalizing run with code {code} and reason {reason}, but no current run found!", level="WARN", l_type="EXP", subsystem=self.name)
+            return
+
         self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
         try:
             print(f"Setting stop KV for run {str(self.__current_run.get_uuid())[-8:]} with code '{code}' and reason '{reason}'")
