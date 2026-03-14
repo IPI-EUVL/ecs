@@ -21,6 +21,10 @@ from ipi_ecs.dds.magics import OP_OK
 class magics:
     E_START_FAILED = b"Subsystem failed to start."
     E_STARTS_FAILED = b"One or more subsystems failed to start."
+    E_START_TIMEOUT = b"Subsystem process started but did not connect before startup timeout elapsed."
+    E_START_EXITED = b"Subsystem process exited before it connected."
+    E_START_STOPPING = b"Subsystem is stopping or stop was requested while startup was in progress."
+    E_START_NOT_RUNNING = b"Subsystem did not start a process."
     E_NXUUID = b"Specified uuid is invalid, not found, or not a managed subsystem."
     E_ALREADY_IN_PROGRESS = b"Operation already in progress."
 
@@ -54,15 +58,15 @@ class SubsystemRuntimeState:
     def decode(s_bytes: bytes):
         ret = SubsystemRuntimeState()
 
-        ret.started = bool.from_bytes(s_bytes[0], byteorder="big")
-        ret.initializing = bool.from_bytes(s_bytes[1], byteorder="big")
-        ret.connected = bool.from_bytes(s_bytes[2], byteorder="big")
-        ret.warn = bool.from_bytes(s_bytes[3], byteorder="big")
-        ret.error = bool.from_bytes(s_bytes[4], byteorder="big")
-        ret.process_running = bool.from_bytes(s_bytes[5], byteorder="big")
-        ret.managed = bool.from_bytes(s_bytes[6], byteorder="big")
+        ret.started = bool.from_bytes(bytes([s_bytes[0]]), byteorder="big")
+        ret.initializing = bool.from_bytes(bytes([s_bytes[1]]), byteorder="big")
+        ret.connected = bool.from_bytes(bytes([s_bytes[2]]), byteorder="big")
+        ret.warn = bool.from_bytes(bytes([s_bytes[3]]), byteorder="big")
+        ret.error = bool.from_bytes(bytes([s_bytes[4]]), byteorder="big")
+        ret.process_running = bool.from_bytes(bytes([s_bytes[5]]), byteorder="big")
+        ret.managed = bool.from_bytes(bytes([s_bytes[6]]), byteorder="big")
 
-        if len(s_bytes > 7):
+        if len(s_bytes) > 7:
             ret.name = s_bytes[7:].decode("utf-8")
 
         return ret
@@ -129,7 +133,7 @@ class LifecycleManager:
 
         self.__sent_status_request = False
 
-        self.__auto_restart = True
+        self.__auto_restart = False
 
         self.__event_consumer = mt_events.EventConsumer()
 
@@ -169,6 +173,7 @@ class LifecycleManager:
 
             self.__update_states()
             self.__update_processes()
+            self.__update_states()
             self.__update_handles()
 
             if self.__out_kv is not None:
@@ -245,6 +250,7 @@ class LifecycleManager:
         self.__runtime_states.clear()
 
         for s in self.__subsystems.values():
+            s_uuid = s["uuid"]
             r = SubsystemRuntimeState()
             r.managed = True
 
@@ -254,12 +260,11 @@ class LifecycleManager:
                 if time.time() - s["last_start"] < self.START_TIMEOUT:
                     r.initializing = True
 
-            for s in self.__subsystems.values():
-                proc = self.__processes.get(s["uuid"])
-                if proc is not None:
-                    r.process_running = True
+            proc = self.__processes.get(s_uuid)
+            if proc is not None:
+                r.process_running = True
 
-            state = self.__states.get(s["uuid"])
+            state = self.__states.get(s_uuid)
 
             if (
                 state is not None
@@ -275,9 +280,9 @@ class LifecycleManager:
                     if sev == subsystem.StatusItem.STATE_WARN:
                         r.warn = True
 
-            if self.__remote_handles.get(s["uuid"]) is not None:
-                r.name = self.__remote_handles.get(s["uuid"]).get_info().get_name()
-            self.__runtime_states[s["uuid"]] = r
+            if self.__remote_handles.get(s_uuid) is not None:
+                r.name = self.__remote_handles.get(s_uuid).get_info().get_name()
+            self.__runtime_states[s_uuid] = r
 
         for s_uuid, state in self.__states.items():
             if self.__runtime_states.get(s_uuid) is not None:
@@ -421,22 +426,29 @@ class LifecycleManager:
                 break
 
     def __update_handles(self):
-        for s_uuid, handle in self.__start_handles:
+        for start_handle in self.__start_handles.copy():
+            s_uuid = start_handle["uuid"]
+            handle = start_handle["handle"]
             s = self.__subsystems[s_uuid]
             state = self.__runtime_states[s_uuid]
 
             if s["should_start"]:
+                self.__emit_progress_feedback(start_handle, b"Start requested, waiting for process launch.")
                 continue
 
             if state.initializing:
+                if state.process_running:
+                    self.__emit_progress_feedback(start_handle, b"Subsystem process started, waiting for DDS connection.")
+                else:
+                    self.__emit_progress_feedback(start_handle, b"Waiting for subsystem process to start.")
                 continue
 
             if not state.connected:
-                handle.fail(magics.E_START_FAILED)
+                handle.fail(self.__get_start_failure_reason(s_uuid, state))
             else:
                 handle.ret(OP_OK)
 
-            self.__start_handles.remove((s_uuid, handle))
+            self.__start_handles.remove(start_handle)
 
         for s_uuid, handle in self.__stop_handles:
             s = self.__subsystems[s_uuid]
@@ -451,22 +463,31 @@ class LifecycleManager:
             handle.ret(OP_OK)
             self.__stop_handles.remove((s_uuid, handle))
 
-        for s_uuid, handle in self.__restart_handles:
+        for restart_handle in self.__restart_handles.copy():
+            s_uuid = restart_handle["uuid"]
+            handle = restart_handle["handle"]
             s = self.__subsystems[s_uuid]
             p = self.__processes.get(s_uuid)
 
+            state = self.__runtime_states[s_uuid]
+            
             if s["should_start"]:
+                self.__emit_progress_feedback(restart_handle, b"Restart requested, waiting for process launch.")
                 continue
 
             if state.initializing:
+                if state.process_running:
+                    self.__emit_progress_feedback(restart_handle, b"Subsystem process restarted, waiting for DDS connection.")
+                else:
+                    self.__emit_progress_feedback(restart_handle, b"Waiting for subsystem process to restart.")
                 continue
 
             if not state.connected:
-                handle.fail(magics.E_START_FAILED)
+                handle.fail(self.__get_start_failure_reason(s_uuid, state))
             else:
                 handle.ret(OP_OK)
 
-            self.__restart_handles.remove((s_uuid, handle))
+            self.__restart_handles.remove(restart_handle)
 
         if self.__start_all_handle is not None:
             failed = False
@@ -507,6 +528,35 @@ class LifecycleManager:
             if not running:
                 self.__stop_all_handle.ret(OP_OK)
                 self.__stop_all_handle = None
+
+    def __get_start_failure_reason(self, s_uuid, state: SubsystemRuntimeState):
+        s = self.__subsystems[s_uuid]
+        process = self.__processes.get(s_uuid)
+
+        if s["should_stop"]:
+            return magics.E_START_STOPPING
+
+        if state.connected:
+            return OP_OK
+
+        if process is None:
+            return magics.E_START_EXITED if state.started else magics.E_START_NOT_RUNNING
+
+        if not process.is_alive():
+            return magics.E_START_EXITED
+
+        if state.process_running and not state.connected:
+            return magics.E_START_TIMEOUT
+
+        return magics.E_START_FAILED
+
+    @staticmethod
+    def __emit_progress_feedback(handle_entry, feedback: bytes):
+        if handle_entry.get("last_feedback") == feedback:
+            return
+
+        handle_entry["handle"].feedback(feedback)
+        handle_entry["last_feedback"] = feedback
 
     def __stop_subsystem(self, s_uuid):
         p = self.__processes.get(s_uuid)
@@ -596,10 +646,12 @@ class LifecycleManager:
         if s_uuid is None:
             handle.fail(magics.E_NXUUID)
             return
+
+        handle.feedback(b"Start request accepted.")
         
         self.start_subsystem(s_uuid)
 
-        self.__start_handles.append((s_uuid, handle))
+        self.__start_handles.append({"uuid": s_uuid, "handle": handle, "last_feedback": None})
 
     def __stop_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         s_uuid = self.__get_subsystem_uuid(param)
@@ -618,10 +670,12 @@ class LifecycleManager:
         if s_uuid is None:
             handle.fail(magics.E_NXUUID)
             return
+
+        handle.feedback(b"Restart request accepted.")
         
         self.restart_subsystem(s_uuid)
 
-        self.__restart_handles.append((s_uuid, handle))
+        self.__restart_handles.append({"uuid": s_uuid, "handle": handle, "last_feedback": None})
 
     def __start_all_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         if self.__start_all_handle is not None:
