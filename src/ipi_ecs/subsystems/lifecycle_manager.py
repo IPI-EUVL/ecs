@@ -609,7 +609,7 @@ class LifecycleManager:
         s["should_start"] = False
         s["last_start"] = time.time()
 
-        p = multiprocessing.Process(target=s["target"], daemon=True, args=(e,))
+        p = multiprocessing.Process(target=s["target"], daemon=False, args=(e,))
         self.__processes[s_uuid] = p
         p.start()
 

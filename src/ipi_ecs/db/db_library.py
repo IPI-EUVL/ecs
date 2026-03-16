@@ -167,9 +167,9 @@ class Library:
 
         for key, value, val_num in tags_rows:
             if val_num is not None:
-                entry.set_tag(key, str(val_num))
+                entry._load_tag(key, str(val_num))
             else:
-                entry.set_tag(key, value)
+                entry._load_tag(key, value)
 
         return entry
 
@@ -279,6 +279,9 @@ class Entry:
     def set_tag(self, key: str, value: str | float) -> None:
         self.__tags[key] = value
         self.__library.update(self)
+
+    def _load_tag(self, key: str, value: str | float) -> None:
+        self.__tags[key] = value
 
     def add_tag(self, key: str) -> None:
         if key in self.__tags and self.__tags[key] != "":

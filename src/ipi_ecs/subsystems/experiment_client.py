@@ -82,6 +82,21 @@ class ExperimentClient:
     
     def _on_stop(self, handle) -> bytes:
         return b": " + self.__client_name.encode() + b" is stopping."
+
+    @staticmethod
+    def __normalize_start_result(ret) -> tuple[bool, bytes]:
+        if isinstance(ret, tuple) and len(ret) == 2:
+            ok, message = ret
+            if isinstance(message, bytes):
+                msg_bytes = message
+            else:
+                msg_bytes = str(message).encode("utf-8", errors="replace")
+            return bool(ok), msg_bytes
+
+        if isinstance(ret, bytes):
+            return True, ret
+
+        return True, str(ret).encode("utf-8", errors="replace")
     
     def _on_did_stop(self, reason: bytes | None = None):
         assert self.__stop_handle is not None
@@ -128,13 +143,17 @@ class ExperimentClient:
         self.__logger.log(f"Pre-initializing {self.__client_name}.", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="preinit_exp")
         
         ret = self._on_preinit(handle)
+        ok, msg = self.__normalize_start_result(ret)
+        if not ok:
+            handle.fail(msg)
+            return
 
         assert self.__preinit_handle is None
 
         self.__current_run = state
 
         self.__preinit_handle = handle
-        self.__preinit_handle.feedback(OP_IN_PROGRESS + ret)
+        self.__preinit_handle.feedback(OP_IN_PROGRESS + msg)
 
     def __on_start_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         #print("Start event called by:", s_uuid, param)
@@ -154,9 +173,13 @@ class ExperimentClient:
 
         self.__last_state_read = time.time()
         ret = self._on_start(handle)
+        ok, msg = self.__normalize_start_result(ret)
+        if not ok:
+            handle.fail(msg)
+            return
 
         self.__start_handle = handle
-        self.__start_handle.feedback(OP_IN_PROGRESS + ret)
+        self.__start_handle.feedback(OP_IN_PROGRESS + msg)
 
     def __on_stop_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         #print("Stop event called by:", s_uuid, param)
@@ -166,12 +189,16 @@ class ExperimentClient:
         end_reason = decoded_param[2] if len(decoded_param[2]) > 0 else None
 
         ret = self._on_stop(handle)
+        ok, msg = self.__normalize_start_result(ret)
+        if not ok:
+            handle.fail(msg)
+            return
 
         self.__stop_handle = handle
 
         self.__logger.log(f"Stopping {self.__client_name}, run: {r_uuid}, reason: {end_reason}, with state: {end_state}", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="stop_exp")
 
-        handle.feedback(OP_IN_PROGRESS + ret)
+        handle.feedback(OP_IN_PROGRESS + msg)
 
     def _setup_subsystem(self, handle: client._RegisteredSubsystemHandle):
         self.__subsystem = handle

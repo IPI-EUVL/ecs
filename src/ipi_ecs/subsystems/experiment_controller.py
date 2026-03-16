@@ -320,9 +320,9 @@ class ExperimentController:
 
         self.__next_run_uuid = None
 
-        self.__require_subsystems = [
-           # uuids.UUID_TARGET_CONTROLLER,
-        ]
+        self.__require_subsystems = {
+            # uuids.UUID_TARGET_CONTROLLER: "Target Controller",
+        }
 
         self.__library = None
 
@@ -408,6 +408,9 @@ class ExperimentController:
             return False
         
         return True
+
+    def __required_subsystem_name(self, s_uuid: uuid.UUID) -> str:
+        return self.__require_subsystems.get(s_uuid, str(s_uuid))
     
     def __should_continue(self):
         s = self.__subsystem.get_all()
@@ -416,26 +419,27 @@ class ExperimentController:
                 continue
 
             if _state.get_status() != subsystem.SubsystemStatus.STATE_ALIVE:
-                return False, f"Required subsystem {_handle.get_info().get_uuid()} has died."
+                dead_uuid = _handle.get_info().get_uuid()
+                return False, f"Required subsystem {self.__required_subsystem_name(dead_uuid)} has died."
 
         state_vs = self.__request_states()
-        for s_uuid in self.__require_subsystems:
+        for s_uuid, s_name in self.__require_subsystems.items():
             if s_uuid not in state_vs:
-                return False, f"Required subsystem {s_uuid} did not provide state KV."
+                return False, f"Required subsystem {s_name} did not provide state KV."
 
             state, v = state_vs[s_uuid]
 
             if state == OP_IN_PROGRESS:
-                return False, f"Attempt to fetch status of {s_uuid} has timed out."
+                return False, f"Attempt to fetch status of {s_name} has timed out."
 
             if state != OP_OK:
-                return False, f"Attempt to fetch status of {s_uuid} returned non-OK({state}): {v if v is not None else 'No reason provided'}."
+                return False, f"Attempt to fetch status of {s_name} returned non-OK({state}): {v if v is not None else 'No reason provided'}."
             
             b_ok, state = segment_bytes.decode(v)
             ok = bool.from_bytes(b_ok, "big")
 
             if not ok:
-                return False, f"Subsystem {s_uuid} reported not OK status: {state.decode('utf-8') if state is not None else 'No reason provided'}."
+                return False, f"Subsystem {s_name} reported not OK status: {state.decode('utf-8') if state is not None else 'No reason provided'}."
             
             self.__states[s_uuid] = state
             
@@ -592,31 +596,33 @@ class ExperimentController:
         log_responses = {}
 
         for s_uuid, (state, reason) in states.items():
+            s_name = self.__required_subsystem_name(s_uuid)
             log_responses[str(s_uuid)] = {
                 "state": state,
                 "reason": reason.decode() if reason is not None else None,
+                "name": s_name,
             }
 
             if state == magics.EVENT_PENDING or state == magics.EVENT_IN_PROGRESS:
-                self.__abort_run(f"Subsystem {s_uuid} has timed out.")
+                self.__abort_run(f"Subsystem {s_name} has timed out.")
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run start rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
+                self.__abort_run(f"Run start rejected by subsystem {s_name} due to {reason.decode("utf-8")}.")
                 return
             
-        for required in self.__require_subsystems:
+        for required, required_name in self.__require_subsystems.items():
             if required not in states:
-                self.__abort_run(f"Required subsystem {required} did not respond to run start request.")
+                self.__abort_run(f"Required subsystem {required_name} did not respond to run start request.")
                 return
             state, reason = states[required]
 
 
             if state != magics.EVENT_OK:
                 if reason == magics.E_DOES_NOT_HANDLE_EVENT or reason == magics.E_SUBSYSTEM_DISCONNECTED:
-                    self.__abort_run(f"Required subsystem {required} is disconnected, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} is disconnected, aborting run start.")
                 else:
-                    self.__abort_run(f"Required subsystem {required} responded with {reason.decode()}, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} responded with {reason.decode()}, aborting run start.")
                 return
             
         self.__can_start_event_handle = None
@@ -640,29 +646,31 @@ class ExperimentController:
         log_responses = {}
 
         for s_uuid, (state, reason) in states.items():
+            s_name = self.__required_subsystem_name(s_uuid)
             log_responses[str(s_uuid)] = {
                 "state": state,
                 "reason": reason.decode() if reason is not None else None,
+                "name": s_name,
             }
             if state == magics.EVENT_PENDING or state == magics.EVENT_IN_PROGRESS:
-                self.__abort_run(f"Subsystem {s_uuid} has timed out.")
+                self.__abort_run(f"Subsystem {s_name} has timed out.")
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run preinitialization rejected by subsystem {s_uuid} due to {reason.decode("utf-8")}.")
+                self.__abort_run(f"Run preinitialization rejected by subsystem {s_name} due to {reason.decode("utf-8")}.")
                 return
         
-        for required in self.__require_subsystems:
+        for required, required_name in self.__require_subsystems.items():
             if required not in states:
-                self.__abort_run(f"Required subsystem {required} did not respond to run preinitialization.")
+                self.__abort_run(f"Required subsystem {required_name} did not respond to run preinitialization.")
                 return
             
             state, reason = states[required]
             if state != magics.EVENT_OK:
                 if reason == magics.E_DOES_NOT_HANDLE_EVENT or reason == magics.E_SUBSYSTEM_DISCONNECTED:
-                    self.__abort_run(f"Required subsystem {required} is disconnected or does not handle event, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} is disconnected or does not handle event, aborting run start.")
                 else:
-                    self.__abort_run(f"Required subsystem {required} responded with {reason.decode()}, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} responded with {reason.decode()}, aborting run start.")
                 return
             
         self.__logger.log("All subsystems preinit OK, starting init.", level="DEBUG", l_type="EXP", subsystem=self.name, event="preinit_run", responses=log_responses, exp_type=self.exp_type)
@@ -688,30 +696,32 @@ class ExperimentController:
         log_responses = {}
 
         for s_uuid, (state, reason) in states.items():
+            s_name = self.__required_subsystem_name(s_uuid)
             log_responses[str(s_uuid)] = {
                 "state": state,
                 "reason": reason.decode() if reason is not None else None,
+                "name": s_name,
             }
 
             if state == magics.EVENT_PENDING or state == magics.EVENT_IN_PROGRESS:
-                print("Subsystem", s_uuid, "still pending/in progress, aborting run start.")
+                print("Subsystem", s_name, "still pending/in progress, aborting run start.")
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run initiation rejected by subsystem {s_uuid} due to {reason.decode('utf-8')}.")
+                self.__abort_run(f"Run initiation rejected by subsystem {s_name} due to {reason.decode('utf-8')}.")
                 return
         
-        for required in self.__require_subsystems:
+        for required, required_name in self.__require_subsystems.items():
             if required not in states:
-                self.__abort_run(f"Required subsystem {required} did not respond to run initiation.")
+                self.__abort_run(f"Required subsystem {required_name} did not respond to run initiation.")
                 return
             
             state, reason = states[required]
             if state != magics.EVENT_OK:
                 if reason == magics.E_DOES_NOT_HANDLE_EVENT or reason == magics.E_SUBSYSTEM_DISCONNECTED:
-                    self.__abort_run(f"Required subsystem {required} is disconnected or does not handle event, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} is disconnected or does not handle event, aborting run start.")
                 else:
-                    self.__abort_run(f"Required subsystem {required} responded with {reason.decode()}, aborting run start.")
+                    self.__abort_run(f"Required subsystem {required_name} responded with {reason.decode()}, aborting run start.")
                 return
             
         self.__logger.log("All subsystems init OK, run started.", level="DEBUG", l_type="EXP", subsystem=self.name, exp_type=self.exp_type)
@@ -761,14 +771,14 @@ class ExperimentController:
     def __request_states(self):
         rets = dict()
 
-        for req in self.__require_subsystems:
+        for req in self.__require_subsystems.keys():
             rets[req] = (OP_IN_PROGRESS, None)
             self.__subsystem.get_kv(req, b"exp_state").then(lambda v, req=req: rets.update({req: (OP_OK, v)})).catch(lambda state, reason, req=req: rets.update({req: (state, reason)}))
 
         timeout = time.time() + 5.0
         while time.time() < timeout:
             all_done = True
-            for req in self.__require_subsystems:
+            for req in self.__require_subsystems.keys():
                 state, reason = rets[req]
                 if state == OP_IN_PROGRESS:
                     all_done = False
@@ -781,9 +791,8 @@ class ExperimentController:
         
         return rets
 
-    def add_required_subsystem(self, s_uuid: uuid.UUID):
-        if s_uuid not in self.__require_subsystems:
-            self.__require_subsystems.append(s_uuid)
+    def add_required_subsystem(self, s_uuid: uuid.UUID, name: str):
+        self.__require_subsystems[s_uuid] = name
 
     def ok(self):
         return self.__run and self.__client.ok()
