@@ -1071,14 +1071,18 @@ class DDSClient:
                             kvs.remote_set(val)
                 elif d[0] == MAGIC_SYSTEM_UPD:
                     s_data = segment_bytes.decode(d[1:])
+                    new_cached_subsystems = dict()
                     for b_data in s_data:
                         b_info, b_status = segment_bytes.decode(b_data)
                         info = SubsystemInfo.decode(b_info)
                         state = SubsystemStatus.decode(b_status)
 
-                        self.__cached_subsystems[info.get_uuid()] = (info, state)
+                        new_cached_subsystems[info.get_uuid()] = (info, state)
 
-                        self.__remote_subsystem_update_event.call()
+                    # The server publishes the full subsystem list. Replace the cache so
+                    # removed temporary subsystems do not linger locally.
+                    self.__cached_subsystems = new_cached_subsystems
+                    self.__remote_subsystem_update_event.call()
                 elif d[0] == MAGIC_EVENT_RET:
                     b_s_uuid, b_r_uuid, b_e_uuid, b_status, ret_value = segment_bytes.decode(d[1:])
                     s_uuid = uuid.UUID(bytes=b_s_uuid)
