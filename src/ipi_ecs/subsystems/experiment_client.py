@@ -99,8 +99,6 @@ class ExperimentClient:
         return True, str(ret).encode("utf-8", errors="replace")
     
     def _on_did_stop(self, reason: bytes | None = None):
-        assert self.__stop_handle is not None
-
         ret = OP_OK + b": " + self.__client_name.encode() + b" has stopped successfully."
 
         if reason:
@@ -108,7 +106,9 @@ class ExperimentClient:
 
         self.__current_run = None
 
-        self.__stop_handle.ret(ret)
+        if self.__stop_handle is not None:
+            self.__stop_handle.ret(ret)
+            
         self.__stop_handle = None
             
     

@@ -3,6 +3,7 @@ import os
 import pickle
 import queue
 import time
+import traceback
 import uuid
 import mt_events
 import segment_bytes
@@ -331,12 +332,25 @@ class ExperimentController:
         self.__data_thread_queue = queue.Queue()
         self.__data_thread_out_queue = queue.Queue()
 
-        self.__daemon = daemon.Daemon()
+        self.__daemon = daemon.Daemon(exception_handler=self.handle_exception)
         self.__daemon.add(self.__data_thread)
         self.__daemon.add(self.__thread)
         self.__daemon.add(self.__check_thread)
 
         self.__daemon.start()
+
+    def handle_exception(self, e: Exception):
+        self.__log("Caught exception on daemon thread!", level="ERROR")
+        for line in traceback.format_exception(None, e, e.__traceback__):
+            for split in line.split('\n'):
+                self.__log(split, level="ERROR")
+    
+    def __log(self, msg, level = "INFO", **data):
+        if self.__logger is None:
+            print(level, msg)
+            return
+        
+        self.__logger.log(msg, level=level, l_type="SW", subsystem="Experiment Controller", **data)
 
     def __thread(self, stop_flag: daemon.StopFlag):
         while stop_flag.run() and self.__run:
@@ -362,7 +376,8 @@ class ExperimentController:
                 self.__on_stop_returned()
 
             if self.__has_timed_out(self.__stop_handle, 30):
-                self.__abort_run("Stop request timed out.")
+                self.__finalize_run("ABORTED", "Stop run request timed out.")
+                self.__run_record = None
 
             self.__update_state()
 
