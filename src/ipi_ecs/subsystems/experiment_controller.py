@@ -46,6 +46,8 @@ class RunSettings:
         if not key in self.data:
             raise ValueError(f"Key '{key}' not found in RunSettings.")
         
+        print(f"Setting {key} to {value} of type {type(value)} which is currently of type {type(self.data[key])}")
+        
         self.data[key] = type(self.data[key])(value) if key in self.data else value
 
     def get_attr(self, key: str, default=None):
@@ -136,6 +138,7 @@ class RunRecord:
         entry = library.create_entry(name, desc)
 
         for k, v in settings.get_dict().items():
+            print("Adding tag for setting:", k, v, "of type", type(v))
             entry.set_tag(k, v)
 
         entry.set_tag("experiment", state.get_type())
@@ -251,6 +254,7 @@ class ExperimentController:
     RUN_OK = 0
     RUN_ABORT = 1
 
+    RUN_STATE_CAN_START = 5
     RUN_STATE_PREINIT = 0
     RUN_STATE_INIT = 1
     RUN_STATE_RUNNING = 2
@@ -311,6 +315,7 @@ class ExperimentController:
 
         self.__state_kv = None
         self.__run_kv = None
+        self.__reasons_kv = None
 
         self.__run_record = None
         self.__event_uuid = None
@@ -391,21 +396,47 @@ class ExperimentController:
                     self.__abort_run(reason)
             time.sleep(1)
 
+    def __status_str_get_for_event(self, event_handle: client._InProgressEvent._Handle):
+        states = []
+
+        for uuid, state in event_handle.get_states().items():
+            code, reason = state
+
+            s_name = self.__require_subsystems.get(uuid, str(uuid))
+            status_code = "Ongoing" if code == EVENT_IN_PROGRESS else "Done"
+
+            if reason == magics.E_DOES_NOT_HANDLE_EVENT:
+                continue
+
+            states.append(segment_bytes.encode([s_name.encode("utf-8"), status_code.encode("utf-8"), reason if reason is not None else b""]))
+
+        return states
+
     def __update_state(self):
         if self.__state_kv is None:
             return
         
+        statestr = []
+        
         if self.__current_run is not None:
             if self.__preinit_handle is not None:
                 self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_PREINIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+                statestr = self.__status_str_get_for_event(self.__preinit_handle)
             elif self.__init_handle is not None:
                 self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_INIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+                statestr = self.__status_str_get_for_event(self.__init_handle)
             elif self.__stop_handle is not None:
                 self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+                statestr = self.__status_str_get_for_event(self.__stop_handle)
+            elif self.__can_start_event_handle is not None and self.__can_start_event_handle.is_in_progress():
+                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_CAN_START.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+                statestr = self.__status_str_get_for_event(self.__can_start_event_handle)
             else:
                 self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_RUNNING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
         else:
             self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPED.to_bytes(1, "big"), bytes()])
+
+        self.__reasons_kv.value = segment_bytes.encode(statestr)
 
     def __has_timed_out(self, event_handle: client._InProgressEvent._Handle, timeout: float) -> bool:
         if event_handle is None:
@@ -777,6 +808,8 @@ class ExperimentController:
         handle.add_event_handler(b"stop_" + self.exp_type.encode("utf-8")).on_called(self.__on_stop_run_event)
 
         self.__state_kv = self.__subsystem.get_kv_property(b"experiment_state", False, True, True)
+        self.__reasons_kv = self.__subsystem.get_kv_property(b"experiment_reasons", False, True, True)
+
         self.__stop_kv = self.__subsystem.get_kv_property(b"run_finalized", False, True, True)
 
         set_kv_h = self.__subsystem.add_kv_handler(b"settings")

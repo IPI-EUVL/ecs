@@ -50,15 +50,15 @@ class ExperimentClient:
         return True, self.EXP_IN_PROGRESS
     
     def _on_preinit(self, handle) -> bytes:
-        return b": " + self.__client_name.encode() + b" is starting."
+        return self.__client_name.encode() + b" is starting."
     
     def _on_did_preinit(self, reason: bytes | None = None):
         assert self.__preinit_handle is not None
 
-        ret = OP_OK + b": " + self.__client_name.encode() + b" has initialized successfully."
+        ret = self.__client_name.encode() + b" has initialized successfully."
 
         if reason:
-            ret = OP_OK + b": " + self.__client_name.encode() + reason
+            ret = reason
         
         self.__preinit_handle.ret(ret)
         self.__preinit_handle = None
@@ -67,21 +67,21 @@ class ExperimentClient:
         return True, OP_OK
     
     def _on_start(self, handle) -> bytes:
-        return b": " + self.__client_name.encode() + b" is running."
+        return self.__client_name.encode() + b" is running."
     
     def _on_did_start(self, reason: bytes | None = None):
         assert self.__start_handle is not None
 
-        ret = OP_OK + b": " + self.__client_name.encode() + b" has started successfully."
+        ret = self.__client_name.encode() + b" has started successfully."
 
         if reason:
-            ret = OP_OK + b": " + self.__client_name.encode() + reason
+            ret = reason
 
         self.__start_handle.ret(ret)
         self.__start_handle = None
     
     def _on_stop(self, handle) -> bytes:
-        return b": " + self.__client_name.encode() + b" is stopping."
+        return self.__client_name.encode() + b" is stopping."
 
     @staticmethod
     def __normalize_start_result(ret) -> tuple[bool, bytes]:
@@ -99,10 +99,10 @@ class ExperimentClient:
         return True, str(ret).encode("utf-8", errors="replace")
     
     def _on_did_stop(self, reason: bytes | None = None):
-        ret = OP_OK + b": " + self.__client_name.encode() + b" has stopped successfully."
+        ret = self.__client_name.encode() + b" has stopped successfully."
 
         if reason:
-            ret = OP_OK + b": " + self.__client_name.encode() + reason
+            ret = reason
 
         self.__current_run = None
 

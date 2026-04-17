@@ -36,8 +36,10 @@ class ExperimentInterface:
 
         self.__current_experiment = None
         self.__current_state = None
+        self.__current_reasons = None
 
         self.__status_kv = None
+        self.__reasons_kv = None
         self.__settings_kv = None
 
         self.__stopped_run_queue = Queue()
@@ -61,6 +63,9 @@ class ExperimentInterface:
 
         self.__status_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"experiment_state", True, True, False))
         self.__status_kv.on_new_data_received(self.__on_status_update)
+
+        self.__reasons_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"experiment_reasons", True, True, False))
+        self.__reasons_kv.on_new_data_received(self.__on_reasons_update)
 
         self.__stop_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"run_finalized", True, True, False))
         self.__stop_kv.on_new_data_received(self.__on_stop_update)
@@ -103,6 +108,9 @@ class ExperimentInterface:
         else:
             self.__current_experiment = None
 
+    def __on_reasons_update(self, n_reasons: bytes):
+        self.__current_reasons = n_reasons
+
     def set_name(self, name: str, ret_type = client.KVP_RET_AWAIT):
         if self.__settings_kv is None:
             print("Settings KV not available yet.")
@@ -136,6 +144,9 @@ class ExperimentInterface:
     
     def get_experiment(self):
         return self.__current_experiment
+
+    def get_experiment_reasons(self):
+        return self.__current_reasons
     
     def close(self):
         self.__client.close()
@@ -211,6 +222,17 @@ class ExperimentControllerGUI:
         self.__uuid_label = ttk.Label(self.__status_frame, text="", font=("Arial", 12))
         self.__uuid_label.pack(side=tk.TOP, pady=5)
 
+        self.__reasons_frame = ttk.LabelFrame(main_frame, text="Current Event Reasons", padding=10)
+        self.__reasons_frame.pack(fill=tk.BOTH, expand=True)
+        self.__reasons_label = ttk.Label(
+            self.__reasons_frame,
+            text="No event reasons available.",
+            justify=tk.LEFT,
+            anchor=tk.W,
+            wraplength=760,
+        )
+        self.__reasons_label.pack(fill=tk.BOTH, expand=True)
+
         self.__control_frame = ttk.LabelFrame(main_frame, text="Controls", padding=10)
         self.__control_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -283,11 +305,13 @@ class ExperimentControllerGUI:
                 entry.config(state=tk.DISABLED)
 
             self.__uuid_label.config(text=f"Run UUID: ...{str(self.__itf.get_experiment_uuid())[-8:]}")
+            self.__reasons_label.config(text=self.__format_reasons(self.__itf.get_experiment_reasons()))
         else:
             for key, entry, type_ in self.__settings_entries:
                 entry.config(state=tk.NORMAL)
 
             self.__uuid_label.config(text="Run UUID: None")
+            self.__reasons_label.config(text="No experiment running.")
 
         self.__update_settings_progress_dialog()
 
@@ -345,6 +369,38 @@ class ExperimentControllerGUI:
         for key, entry, _type in self.__settings_entries:
             values[key] = entry.get()
         return values
+
+    def __format_reasons(self, reasons: bytes | None):
+        if reasons is None or len(reasons) == 0:
+            return "No event reasons available."
+
+        try:
+            items = segment_bytes.decode(reasons)
+        except Exception as exc:
+            return f"Unable to decode event reasons: {exc}"
+
+        lines = []
+        for item in items:
+            try:
+                parts = segment_bytes.decode(item)
+                if len(parts) != 3:
+                    continue
+
+                name = parts[0].decode("utf-8", errors="replace")
+                status = parts[1].decode("utf-8", errors="replace")
+                reason = parts[2].decode("utf-8", errors="replace") if len(parts[2]) > 0 else ""
+
+                if reason:
+                    reason = reason.replace(magics.OP_OK.decode(), "OK").replace(magics.OP_IN_PROGRESS.decode(), "Ongoing")
+
+                if reason:
+                    lines.append(f"{name}: {status} - {reason}")
+                else:
+                    lines.append(f"{name}: {status}")
+            except Exception as exc:
+                lines.append(f"<unreadable reason entry: {exc}>")
+
+        return "\n".join(lines) if len(lines) > 0 else "No event reasons available."
 
     def __has_unapplied_settings(self):
         current_values = self.__capture_entry_values()
