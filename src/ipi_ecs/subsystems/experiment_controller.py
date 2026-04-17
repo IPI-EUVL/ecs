@@ -754,7 +754,7 @@ class ExperimentController:
             return (magics.TRANSOP_STATE_REJ, b"Invalid data format for settings update.")
         try:
             self.__settings.set_attr(bytes_d[0].decode("utf-8"), bytes_d[1].decode("utf-8"))
-        except ValueError as e:
+        except (ValueError, AssertionError) as e:
             return (magics.TRANSOP_STATE_REJ, f"Invalid value for setting: {e}".encode("utf-8"))
         return (magics.TRANSOP_STATE_OK, bytes())
 
