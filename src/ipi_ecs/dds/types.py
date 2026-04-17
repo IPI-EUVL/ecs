@@ -156,7 +156,7 @@ class VectorTypeSpecifier(PropertyTypeSpecifier):
         return segment_bytes.encode(encoded_elements)
     
     def encode_type(self):
-        element_type_data = self.__element_type.encode_type()
+        element_type_data = encode(self.__element_type)
         length_data = self.__length.to_bytes(length=4, byteorder="big")
 
         return segment_bytes.encode([element_type_data, length_data])
@@ -165,7 +165,7 @@ class VectorTypeSpecifier(PropertyTypeSpecifier):
     def decode_type(data : bytes):
         datas = segment_bytes.decode(data)
 
-        element_type = PropertyTypeSpecifier.decode_type(datas[0])
+        element_type = decode(datas[0])
         length = int.from_bytes(datas[1], byteorder="big")
 
         return VectorTypeSpecifier(element_type, length)
@@ -185,9 +185,12 @@ def encode(s : "PropertyTypeSpecifier"):
 def decode(d : bytes):
     datas = segment_bytes.decode(d)
 
+    if len(datas) != 2:
+        raise ValueError("Invalid data for type decoding")
 
     identifier = int.from_bytes(datas[0], byteorder="big")
     data = datas[1]
+
 
     p_type = types.get_type(identifier)
     return p_type.decode_type(data)
