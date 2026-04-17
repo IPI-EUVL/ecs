@@ -233,10 +233,7 @@ class LifecycleInterface:
 		)
 		kv = self.__subsystem_handle.add_remote_kv(self.__lifecycle_manager_uuid, no_sub_desc)
 
-		try:
-			data = kv.value
-		except Exception:
-			return {}
+		data = kv.value
 
 		if data is None:
 			return {}
@@ -336,11 +333,8 @@ class LifecycleInterface:
 		}
 
 	def __emit_snapshot(self):
-		try:
-			snap = self.__build_snapshot()
-			self.__out_queue.put(("snapshot", snap))
-		except Exception as exc:
-			self.__out_queue.put(("error", f"Snapshot failed: {exc}"))
+		snap = self.__build_snapshot()
+		self.__out_queue.put(("snapshot", snap))
 
 	def __queue_op(self, action: str, s_uuid: uuid.UUID | None):
 		if self.__subsystem_handle is None:
@@ -554,6 +548,7 @@ class LifecycleInterface:
 			value = kv.value
 			self.__out_queue.put(("kv_value", s_uuid, desc.get_key(), True, self.__render_value(value)))
 		except Exception as exc:
+			print("Error reading KV:", exc)
 			self.__out_queue.put(("kv_value", s_uuid, desc.get_key(), False, str(exc)))
 
 	def __write_kv(self, s_uuid: uuid.UUID, desc: subsystem.KVDescriptor, raw_value: str, parse_mode: str = "Descriptor"):
@@ -568,6 +563,7 @@ class LifecycleInterface:
 		try:
 			parsed = self.__parse_typed_input(desc.get_type(), raw_value, parse_mode=parse_mode)
 		except Exception as exc:
+			print("Error parsing input for KV write:", exc)
 			self.__out_queue.put(("kv_write", s_uuid, desc.get_key(), False, f"Invalid value: {exc}"))
 			return
 
@@ -597,9 +593,15 @@ class LifecycleInterface:
 			provider = self.__subsystem_handle.add_event_provider(name)
 			self.__event_providers[name] = provider
 
+		# Event providers default to ByteTypeSpecifier until their types are set.
+		# Use the selected event descriptor so the local encoder/decoder matches the remote event.
+		provider.set_types(desc.get_parameter_type(), desc.get_return_type())
+
 		try:
 			typed_param = self.__parse_typed_input(desc.get_parameter_type(), raw_param, parse_mode=parse_mode)
 		except Exception as exc:
+			print("Error parsing input for event call:", exc)
+
 			self.__out_queue.put(("event_done", target_uuid, name, False, f"Invalid parameter value: {exc}"))
 			return
 
