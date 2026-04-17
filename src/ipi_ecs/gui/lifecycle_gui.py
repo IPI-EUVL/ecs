@@ -316,11 +316,21 @@ class LifecycleInterface:
 			# Prefer lifecycle runtime connectivity view for managed subsystems.
 			row["connected"] = runtime_state.connected
 
-		enriched_rows.sort(key=lambda r: (r["name"] or "", str(r["uuid"])))
+		# Temporary subsystems are expected to disappear once disconnected.
+		# Prune stale disconnected temporary entries from the snapshot.
+		pruned_rows = []
+		pruned_by_uuid = {}
+		for row in enriched_rows:
+			if row["temporary"] and not row["connected"]:
+				continue
+			pruned_rows.append(row)
+			pruned_by_uuid[row["uuid"]] = row
+
+		pruned_rows.sort(key=lambda r: (r["name"] or "", str(r["uuid"])))
 
 		return {
-			"rows": enriched_rows,
-			"by_uuid": by_uuid,
+			"rows": pruned_rows,
+			"by_uuid": pruned_by_uuid,
 			"lifecycle_manager_present": lm_present,
 			"lifecycle_manager_uuid": self.__lifecycle_manager_uuid,
 		}
@@ -765,6 +775,15 @@ class LifecycleGUI:
 		self.__restart_all_btn = ttk.Button(action_bar, text="Restart All", command=self.__on_restart_all)
 		self.__restart_all_btn.pack(side=tk.LEFT, padx=2)
 
+		self.__hide_hidden_var = tk.BooleanVar(value=True)
+		self.__hide_hidden_chk = ttk.Checkbutton(
+			action_bar,
+			text="Hide __ subsystems",
+			variable=self.__hide_hidden_var,
+			command=self.__on_toggle_hidden,
+		)
+		self.__hide_hidden_chk.pack(side=tk.RIGHT, padx=2)
+
 		cols = ("name", "uuid6", "connected", "managed", "process", "init", "started", "status")
 		tree_frame = ttk.Frame(parent)
 		tree_frame.pack(fill=tk.BOTH, expand=True)
@@ -1056,7 +1075,7 @@ class LifecycleGUI:
 		self.__active_status_tree.delete(*self.__active_status_tree.get_children())
 
 		count = 0
-		for row in self.__snapshot.get("rows", []):
+		for row in self.__visible_rows():
 			s_name = row.get("name") or f"...{row.get('uuid6', '??????')}"
 			for item in row.get("status_items", []):
 				sev = item.get_severity()
@@ -1078,6 +1097,15 @@ class LifecycleGUI:
 		if count == 0:
 			self.__active_status_tree.insert("", tk.END, values=("(none)", "", "", "No active status items."))
 
+	def __is_row_visible(self, row: dict) -> bool:
+		if not self.__hide_hidden_var.get():
+			return True
+		name = row.get("name") or ""
+		return not name.startswith("__")
+
+	def __visible_rows(self) -> list[dict]:
+		return [row for row in self.__snapshot.get("rows", []) if self.__is_row_visible(row)]
+
 	def __selected_uuid(self):
 		selection = self.__tree.selection()
 		if not selection:
@@ -1088,7 +1116,12 @@ class LifecycleGUI:
 		s_uuid = self.__selected_uuid()
 		if s_uuid is None:
 			return None
-		return self.__snapshot["by_uuid"].get(s_uuid)
+		row = self.__snapshot["by_uuid"].get(s_uuid)
+		if row is None:
+			return None
+		if not self.__is_row_visible(row):
+			return None
+		return row
 
 	@staticmethod
 	def __sev_text(sev: int) -> str:
@@ -1196,7 +1229,7 @@ class LifecycleGUI:
 		self.__tree_uuid_by_iid.clear()
 
 		selected_iid = None
-		for row in self.__snapshot["rows"]:
+		for row in self.__visible_rows():
 			runtime = row["runtime"]
 			is_managed = row["managed"]
 			process_text = "Y" if (is_managed and runtime.process_running) else ("" if not is_managed else "N")
@@ -1227,6 +1260,13 @@ class LifecycleGUI:
 		self.__update_active_status_items_bar()
 		self.__update_detail_panel()
 		self.__refresh_controls()
+
+	def __on_toggle_hidden(self):
+		self.__rebuild_table()
+		if self.__hide_hidden_var.get():
+			self.__status_var.set("Hiding hidden subsystems (names starting with '__').")
+		else:
+			self.__status_var.set("Showing hidden subsystems (names starting with '__').")
 
 	def __on_select_subsystem(self, _event=None):
 		self.__update_detail_panel()
