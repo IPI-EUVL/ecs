@@ -45,15 +45,12 @@ class Library:
         with self.__conn:
             self.__conn.execute("DELETE FROM tags WHERE entry_uuid = ?", (str(entry.get_uuid()),))
             for key, value in entry.get_tags().items():
-                try:
-                    # Try to parse as float; if successful, store as numeric
-                    val_num = float(value)
+                if type(value) is float:
                     self.__conn.execute(
                         "INSERT INTO tags (entry_uuid, key, value, val_num) VALUES (?, ?, NULL, ?)",
-                        (str(entry.get_uuid()), key, val_num),
+                        (str(entry.get_uuid()), key, value),
                     )
-                except ValueError:
-                    # Not numeric, store as string
+                else:
                     self.__conn.execute(
                         "INSERT INTO tags (entry_uuid, key, value, val_num) VALUES (?, ?, ?, NULL)",
                         (str(entry.get_uuid()), key, value),
@@ -145,7 +142,12 @@ class Library:
         entries = []
         for row in rows:
             s_uuid = uuid.UUID(row[0])
-            entry = self.__read(s_uuid)
+            try:
+                print(f"Loading entry {s_uuid}...")
+                entry = self.__read(s_uuid)
+            except Exception as e:
+                print(f"Error reading entry {s_uuid}: {e}")
+                continue
             entries.append(entry)
         return entries
 
