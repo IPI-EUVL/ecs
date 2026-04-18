@@ -703,8 +703,9 @@ class LifecycleGUI:
 		"List (literal)",
 	)
 
-	def __init__(self, root: tk.Tk, lifecycle_manager_uuid: uuid.UUID):
+	def __init__(self, root, lifecycle_manager_uuid: uuid.UUID, own_window: bool = True):
 		self.root = root
+		self.__own_window = own_window
 		self.__interface = LifecycleInterface(lifecycle_manager_uuid)
 
 		self.__snapshot = {
@@ -721,9 +722,12 @@ class LifecycleGUI:
 		self.__request_close_btn = None
 		self.__request_auto_close_job = None
 
-		root.title("Lifecycle Manager Browser")
-		root.geometry("1280x760")
-		root.minsize(980, 620)
+		if self.__own_window and hasattr(root, "title"):
+			root.title("Lifecycle Manager Browser")
+		if self.__own_window and hasattr(root, "geometry"):
+			root.geometry("1280x760")
+		if self.__own_window and hasattr(root, "minsize"):
+			root.minsize(980, 620)
 
 		self.__status_var = tk.StringVar(value="Connecting...")
 
@@ -731,7 +735,8 @@ class LifecycleGUI:
 		self.__refresh_controls()
 		self.__interface.request_refresh()
 
-		root.protocol("WM_DELETE_WINDOW", self.on_close)
+		if self.__own_window and hasattr(root, "protocol"):
+			root.protocol("WM_DELETE_WINDOW", self.on_close)
 		self.__updater()
 
 	def __build(self):
@@ -1488,7 +1493,8 @@ class LifecycleGUI:
 		if self.__request_dialog is not None and self.__request_dialog.winfo_exists():
 			self.__request_dialog.destroy()
 		self.__interface.close()
-		self.root.destroy()
+		if self.__own_window and hasattr(self.root, "destroy"):
+			self.root.destroy()
 
 
 def _default_lifecycle_uuid() -> uuid.UUID:

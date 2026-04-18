@@ -171,20 +171,21 @@ class ExperimentInterface:
         return self.exp_settings_type
 
 class ExperimentControllerGUI:
-    def __init__(self, root, itf : ExperimentInterface):
+    def __init__(self, root, itf : ExperimentInterface, own_window: bool = True):
         self.root = root
-        root.title("Experiment Controller GUI")
+        self.__own_window = own_window
+        if self.__own_window and hasattr(root, "title"):
+            root.title("Experiment Controller GUI")
 
         self.__itf = itf
 
-        self.__settings_entries = []
         self.__update_queue = Queue()
         self.__applied_settings = {}
         self.__settings_update_attempted_values = {}
         
         #GUI setup 
         self.__initialize_component()
-        self.__applied_settings = self.__capture_entry_values()
+        self.__applied_settings = {}
         self.handle_window()
 
         self.__op_event_handle = None
@@ -245,17 +246,18 @@ class ExperimentControllerGUI:
         self.__data_frame.pack(fill=tk.BOTH, expand=True)
         self.__data_frame.columnconfigure(1, weight=1)
 
+        """
         keys_types = self.__itf.get_exp_settings_type()().get_types()
         for key, type_ in keys_types.items():
             self.__add_settings_row(key, type_, self.__data_frame)
-
-        set_button = ttk.Button(self.__data_frame, text="Update Settings", command=self.__on_update_settings)
-        set_button.grid(row=len(self.__settings_entries) + 1, column=0, columnspan=2, pady=5)
+        """
+        #set_button = ttk.Button(self.__data_frame, text="Update Settings", command=self.__on_update_settings)
+        #set_button.grid(row=len(self.__settings_entries) + 1, column=0, columnspan=2, pady=5)
 
     def friendly_type_name(self, key):
         underscore_replaced = key.replace("_", " ")
         return underscore_replaced.capitalize()
-
+    """
     def __add_settings_row(self, key: str, type: type, root: ttk.Frame):
         label = ttk.Label(root, text=f"{self.friendly_type_name(key)}:")
         label.grid(row=len(self.__settings_entries), column=0, sticky=tk.EW, pady=2)
@@ -263,7 +265,7 @@ class ExperimentControllerGUI:
         entry.grid(row=len(self.__settings_entries), column=1, sticky=tk.EW, pady=2)
 
         self.__settings_entries.append((key, entry, type))
-
+    """
     def __update_thread(self, stop_flag: daemon.StopFlag):
         while stop_flag.run():
             try:
@@ -299,16 +301,16 @@ class ExperimentControllerGUI:
             exp = self.__itf.get_experiment().get_settings()
             exp_dict = exp.get_dict()
 
-            for key, entry, type_ in self.__settings_entries:
+            """for key, entry, type_ in self.__settings_entries:
                 value = exp_dict.get(key)
                 self.__set_entry_value(entry, value)
-                entry.config(state=tk.DISABLED)
+                entry.config(state=tk.DISABLED)"""
 
             self.__uuid_label.config(text=f"Run UUID: ...{str(self.__itf.get_experiment_uuid())[-8:]}")
             self.__reasons_label.config(text=self.__format_reasons(self.__itf.get_experiment_reasons()))
         else:
-            for key, entry, type_ in self.__settings_entries:
-                entry.config(state=tk.NORMAL)
+            """for key, entry, type_ in self.__settings_entries:
+                entry.config(state=tk.NORMAL)"""
 
             self.__uuid_label.config(text="Run UUID: None")
             self.__reasons_label.config(text="No experiment running.")
@@ -363,12 +365,12 @@ class ExperimentControllerGUI:
 
         if state != tk.NORMAL:
             entry.config(state=state)
-
+    """
     def __capture_entry_values(self):
         values = {}
         for key, entry, _type in self.__settings_entries:
             values[key] = entry.get()
-        return values
+        return values"""
 
     def __format_reasons(self, reasons: bytes | None):
         if reasons is None or len(reasons) == 0:
@@ -401,13 +403,13 @@ class ExperimentControllerGUI:
                 lines.append(f"<unreadable reason entry: {exc}>")
 
         return "\n".join(lines) if len(lines) > 0 else "No event reasons available."
-
+    """
     def __has_unapplied_settings(self):
         current_values = self.__capture_entry_values()
         for key, value in current_values.items():
             if str(self.__applied_settings.get(key, "")) != str(value):
                 return True
-        return False
+        return False"""
 
     def __get_transop_error_message(self, op_handle):
         state = op_handle.get_state()
@@ -538,15 +540,14 @@ class ExperimentControllerGUI:
         for child in self.__data_frame.winfo_children():
             child.config(state=state)
 
-    def __on_update_settings(self):
+    def do_update_settings(self, settings: dict[str, str]):
         if self.__settings_update_active:
             self.__create_settings_progress_dialog()
             return
 
         updates = []
-        for key, entry, type_ in self.__settings_entries:
-            value_str = entry.get()
-            updates.append((key, value_str))
+        for k, v in settings.items():
+            updates.append((k, v))
 
         if len(updates) == 0:
             return
@@ -573,17 +574,19 @@ class ExperimentControllerGUI:
             self.__record_settings_update_result("Settings KV not available yet.")
 
     def handle_window(self):
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        if self.__own_window and hasattr(self.root, "protocol"):
+            self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
-        self.root.destroy()
         self.__daemon.stop()
+        if self.__own_window and hasattr(self.root, "destroy"):
+            self.root.destroy()
 
     def __on_start_experiment(self):
         if self.__settings_update_active:
             self.__create_settings_progress_dialog()
             return
-
+        """
         if self.__itf.get_experiment() is None and self.__has_unapplied_settings():
             start_anyway = messagebox.askyesno(
                 "Unapplied Settings",
@@ -592,7 +595,7 @@ class ExperimentControllerGUI:
                 icon=messagebox.WARNING,
             )
             if not start_anyway:
-                return
+                return"""
 
         self.__op_event_handle = self.__itf.start_experiment()
         self.__current_op = "Starting"
