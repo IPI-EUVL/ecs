@@ -184,6 +184,9 @@ class TCPSocket:
             except ConnectionAbortedError:
                 self._closed()
                 continue
+            except OSError:
+                self._closed()
+                continue
 
             if len(data) == 0:
                 self._closed()
