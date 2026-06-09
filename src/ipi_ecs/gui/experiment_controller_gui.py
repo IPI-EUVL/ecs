@@ -273,7 +273,7 @@ class ExperimentControllerGUI:
                 if self.__op_transop_handle is not None:
                     continue
 
-                key, value_str = self.__update_queue.get(timeout=1)
+                key, value_str = self.__update_queue.get(timeout=0.1)
                 self.__do_update_setting(key, value_str)
             except Empty:
                 pass
@@ -281,7 +281,7 @@ class ExperimentControllerGUI:
 
     def __updater(self):
         self.__update_values()
-        self.root.after(500, self.__updater)
+        self.root.after(50, self.__updater)
 
     def __update_values(self):
         if (self.__op_event_handle is None and self.__op_transop_handle is None) or self.__current_op in ["Starting", "Stopping"]:
