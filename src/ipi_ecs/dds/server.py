@@ -78,7 +78,7 @@ class _DDSServer:
 
                         #print("Handshake received from ", self.__socket.remote())
                         self.__handshake_received = True
-                        self.__socket.put(bytes([MAGIC_HANDSHAKE_CLIENT]))
+                        self.__socket.put(bytes([MAGIC_HANDSHAKE_SERVER]))
                         self.__transactions.send_transaction(bytes([TRANSACT_REQ_UUID])).then(self.__transact_status_change)
 
                     if not self.__handshake_received:
@@ -219,13 +219,16 @@ class _DDSServer:
                 else:
                     t.nak()
             except Exception as e:
-                self.__l
                 self.__server.handle_exception(e)
                 t.nak()
                 pass
 
         def __flush_transponder(self):
             while not self.__transactions_msg_out_queue.empty():
+                if not self.__handshake_received:
+                    #print("Attempted to send data before handshake was complete!")
+                    return
+                
                 m = self.__transactions_msg_out_queue.get()
 
                 to_send = bytes()
@@ -258,15 +261,24 @@ class _DDSServer:
             #self.__socket.put(bytes([MAGIC_HANDSHAKE_SERVER]))
 
         def on_subscription_update(self, s_uuid : uuid.UUID, key : bytes, value : bytes):
+            if not self.__handshake_received:
+                #print("Attempted to send subscription update before handshake was complete!")
+                return
             self.__socket.put(bytes([MAGIC_SUBSCRIBED_UPD]) + segment_bytes.encode([s_uuid.bytes, key, value]))
 
         def on_system_update(self, data : bytes):
+            if not self.__handshake_received:
+                #print("Attempted to send system update before handshake was complete!")
+                return
             self.__socket.put(bytes([MAGIC_SYSTEM_UPD]) + data)
 
         def get_server(self):
             return self.__server
         
         def send(self, data: bytes):
+            if not self.__handshake_received:
+                #print("Attempted to send data before handshake was complete!")
+                return
             self.__socket.put(data)
 
         
@@ -422,8 +434,13 @@ class _DDSServer:
 
         if port is None:
             port = SERVER_PORT
+
+        if type(port) == str:
+            port = int(port)
         
         self.__logger = logger
+
+        print(f"Starting DDS Server on {host}:{port}...")
 
         self.__server = tcp.TCPServer((host, port), self.__client_queue)
         
