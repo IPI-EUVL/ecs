@@ -67,7 +67,7 @@ class DDSServerService(win32serviceutil.ServiceFramework):
             self.__logger_sock.connect(("127.0.0.1", 11751))
             self.__logger_sock.start()
 
-            host = os.environ.get("ECS_HOST")
+            host = "0.0.0.0"
             port = int(os.environ.get("ECS_PORT"))
 
             self.__logger = LogClient(self.__logger_sock, origin_uuid=uuid.UUID(bytes=bytes(16)))

@@ -282,20 +282,24 @@ class LifecycleInterface:
 				lm_present = True
 				lm_remote = remote
 
-			row = {
-				"uuid": s_uuid,
-				"uuid6": _uuid6(s_uuid),
-				"name": info.get_name(),
-				"temporary": bool(info.get_temporary()),
-				"connected": state.get_status() == subsystem.SubsystemStatus.STATE_ALIVE,
-				"status_items": list(state.get_status_items()),
-				"status_text": self.__severity_text(state.get_status_items()),
-				"kvs": list(info.get_kvs()),
-				"events_provided": list(info.get_events()[0]),
-				"events_handled": list(info.get_events()[1]),
-				"managed": False,
-				"runtime": RuntimeState(),
-			}
+			try:
+				row = {
+					"uuid": s_uuid,
+					"uuid6": _uuid6(s_uuid),
+					"name": info.get_name(),
+					"temporary": bool(info.get_temporary()),
+					"connected": state.get_status() == subsystem.SubsystemStatus.STATE_ALIVE,
+					"status_items": list(state.get_status_items()),
+					"status_text": self.__severity_text(state.get_status_items()),
+					"kvs": list(info.get_kvs()),
+					"events_provided": list(info.get_events()[0]),
+					"events_handled": list(info.get_events()[1]),
+					"managed": False,
+					"runtime": RuntimeState(),
+				}
+			except Exception as exc:
+				print(f"Error building snapshot row for subsystem {info.get_name()}({s_uuid}): {exc}")
+				raise exc
 			enriched_rows.append(row)
 			by_uuid[s_uuid] = row
 
