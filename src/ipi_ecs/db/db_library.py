@@ -153,19 +153,24 @@ class Library:
 
     def __read(self, s_uuid: uuid.UUID) -> "Entry":
         """Load an entry from the DB by UUID."""
+        print("Reading entry with UUID:", s_uuid)
         row = self.__conn.execute(
-            "SELECT foldername FROM library WHERE uuid = ?", (str(s_uuid),)
+            "SELECT name, created, description, foldername FROM library WHERE uuid = ?", (str(s_uuid),)
         ).fetchone()
+        #print("DB query result for entry:", row)
 
         if row is None:
             raise ValueError("Entry not found")
 
-        foldername = row[0]
-        entry = Entry(self, s_uuid=s_uuid, foldername=foldername)
+        name, created, description, foldername = row
+        #print(f"Found foldername '{foldername}' for entry with UUID: {s_uuid}, creating Entry object...")
+        entry = Entry(self, s_uuid=s_uuid, name=name, created=created, desc=description, foldername=foldername, quickload=True, tags=dict())
 
+        #print("Reading tags for entry with UUID:", s_uuid)
         tags_rows = self.__conn.execute(
         "SELECT key, value, val_num FROM tags WHERE entry_uuid = ?", (str(s_uuid),)
         ).fetchall()
+        #print("DB query result for tags:", tags_rows)
 
         for key, value, val_num in tags_rows:
             if val_num is not None:
@@ -225,6 +230,9 @@ class Entry:
         desc: str | None = None,
         foldername: str | None = None,
         s_uuid: uuid.UUID | None = None,
+        quickload: bool = False,
+        tags: dict = dict(),
+        created: int | None = None
     ):
         self.__library = library
         self.__uuid = s_uuid or uuid.uuid4()
@@ -237,8 +245,16 @@ class Entry:
         self.__registry = dict()
 
         self.__tags = dict()
-
-        if foldername is not None:
+        if quickload:
+            self.__name = name
+            self.__description = desc
+            self.__created = created
+            self.__tags = tags
+            self.__foldername = foldername
+            self.__res_path = os.path.join(
+                self.__library.get_base_path(), self.__foldername
+                )
+        elif foldername is not None:
             self.__read(foldername)
         elif name is not None and desc is not None:
             self.__create(name, desc)
@@ -309,7 +325,9 @@ class Entry:
             self.__write_metadata()
 
     def __read_data(self):
+        print(f"Reading metadata for entry with UUID: {self.__uuid} from folder: {self.__foldername}...")
         dat_file = self.__resource("registry.dat")
+        print("Opened registry.dat, reading contents...")
 
         try:
             read_uuid = uuid.UUID(dat_file.readline().strip())
@@ -375,5 +393,5 @@ class Entry:
         self.__res_path = os.path.join(
             self.__library.get_base_path(), self.__foldername
         )
-
+        print(f"Reading entry from folder '{self.__foldername}'...")
         self.__read_data()

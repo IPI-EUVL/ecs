@@ -20,7 +20,7 @@ import ipi_ecs.core.tcp as tcp
 from ipi_ecs.dds.magics import *
 
 from ipi_ecs.logging.client import LogClient
-from ipi_ecs.db.db_library import Library
+from ipi_ecs.db.db_library import Entry, Library
 
 class RunSettings:
     data = {
@@ -118,18 +118,22 @@ class RunState:
 class RunRecord:
     CURRENT_DATA_VERSION = 1
 
-    def __init__(self, logger: LogClient, library: Library, controller: "ExperimentController", r_uuid: uuid.UUID):
-        self.__entry = None
+    def __init__(self, logger: LogClient, library: Library, controller: "ExperimentController", r_uuid: uuid.UUID, entry: Entry = None):
+        self.__entry = entry
         self.__event_uuid = None
 
         self.__logger = logger
         self.__library = library
         self.__run_uuid = r_uuid
 
+        self.__metadata = None
+        self.__end_metadata = None
+
         self.__state = None
         self.__controller = controller
 
-        self.read(self.__run_uuid)
+        if self.__entry is None:
+            self.read(self.__run_uuid)
 
     @staticmethod
     def create(logger: LogClient, library: Library, state: RunState, settings: RunSettings, controller: "ExperimentController"):
@@ -161,7 +165,7 @@ class RunRecord:
         json.dump(metadata, md_res)
         md_res.close()
 
-        return RunRecord(logger, library, controller, state.get_uuid())
+        return RunRecord(logger, library, controller, state.get_uuid(), entry=entry)
     
     def read(self, s_uuid: uuid.UUID):
         entry = self.__library.query({"tags": {"run": s_uuid.hex}}, limit=1)
@@ -171,6 +175,10 @@ class RunRecord:
         
         entry = entry[0]
         
+        self.__entry = entry # Defer reading until accessing state or metadata to avoid unnecessary reads
+    
+    def __read_from_entry(self, entry: Entry):
+        print("Reading run record from entry with UUID:", entry.get_uuid(), "and tags:", entry.get_tags())
         res = entry.resource("run.json", "run_state", "r")
         run = RunState.decode(res.read())
         res.close()
@@ -242,12 +250,22 @@ class RunRecord:
         return self.__entry
     
     def get_state(self) -> RunState:
+        if self.__state is None and self.__entry is not None:
+            print("State is None, reading from entry...")
+            self.__read_from_entry(self.__entry)
+        
         return self.__state
     
     def get_metadata(self):
+        if self.__metadata is None and self.__entry is not None:
+            print("Metadata is None, reading from entry...")
+            self.__read_from_entry(self.__entry)
         return self.__metadata
     
     def get_end_metadata(self):
+        if self.__end_metadata is None and self.__entry is not None:
+            print("End metadata is None, reading from entry...")
+            self.__read_from_entry(self.__entry)
         return self.__end_metadata
 
 class ExperimentController:
@@ -978,16 +996,28 @@ class ExperimentReader:
         q_args = {} if q_args is None else q_args
         q_args["tags"] = q_tags
         
+        print("Querying runs with args:", q_args, "and limit:", limit)
         entries = self.__library.query(q_args, limit=limit)
+        print(f"Found {len(entries)} entries matching query.")
         runs = []
+
+        failed = 0
 
         for entry in entries:
             try:
-                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                #print(f"Loading run record for entry {entry.get_uuid()} with tags {entry.get_tags()}")
+                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")), entry=entry)
+                #print(f"Loaded run record for entry {entry.get_uuid()}: name='{data_manager.get_name()}', description='{data_manager.get_description()}', tags={data_manager.get_tags()}")
                 runs.append(data_manager)
             except Exception as e:
                 print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
+                for line in traceback.format_exception(None, e, e.__traceback__):
+                    for split in line.split('\n'):
+                        print(split)
+
+                failed += 1
         
+        print("Done loading runs, total loaded:", len(runs), "failed to load:", failed)
         return runs
     
     def get_run(self, r_uuid: uuid.UUID) -> RunRecord:
