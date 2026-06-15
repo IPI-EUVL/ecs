@@ -584,14 +584,15 @@ class ExperimentController:
         self.stop_run(param.decode("utf-8"))
 
     def __try_start_run(self):
+        if self.__preinit_handle is not None or self.__init_handle is not None or self.__stop_handle is not None or self.__current_run is not None:
+            self.__logger.log("Cannot start new run while another is in progress!", level="WARN", l_type="EXP", subsystem=self.name)
+            return False, b"Cannot start new run while another is in progress!"
+        
         self.__next_run_uuid = uuid.uuid4()
         self.__create_run()
 
         self.__logger.log("Attempting to begin new run: " + str(self.__next_run_uuid) + "...", level="DEBUG", l_type="EXP", subsystem=self.name)
 
-        if self.__preinit_handle is not None or self.__init_handle is not None or self.__stop_handle is not None:
-            self.__logger.log("Cannot start new run while another is in progress!", level="WARN", l_type="EXP", subsystem=self.name)
-            return False, b"Cannot start new run while another is in progress!"
 
         b_s_data = self.__settings.encode().encode("utf-8")
         b_state_data = self.__current_run.encode().encode("utf-8")
