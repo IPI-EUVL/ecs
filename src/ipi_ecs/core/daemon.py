@@ -121,6 +121,8 @@ class Daemon:
         if self.__exception_handler is not None:
             self.__exception_handler(exception)
 
+        time.sleep(0.25) # Give some time for exception handler to do its thing before killing threads
+
         self.__ok = False
         self.stop()
 
