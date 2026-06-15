@@ -531,6 +531,7 @@ class ExperimentControllerGUI:
         self.__set_data_controls_enabled(should_enable_data)
 
     def __set_controls_enabled(self, enabled: bool):
+        return
         state = tk.NORMAL if enabled else tk.DISABLED
         for child in self.__control_frame.winfo_children():
             child.config(state=state)

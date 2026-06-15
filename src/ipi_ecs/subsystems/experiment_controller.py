@@ -118,9 +118,9 @@ class RunState:
 class RunRecord:
     CURRENT_DATA_VERSION = 1
 
-    def __init__(self, logger: LogClient, library: Library, controller: "ExperimentController", r_uuid: uuid.UUID, entry: Entry = None):
+    def __init__(self, logger: LogClient, library: Library, controller: "ExperimentController", r_uuid: uuid.UUID, entry: Entry = None, event_uuid: uuid.UUID = None):
         self.__entry = entry
-        self.__event_uuid = None
+        self.__event_uuid = event_uuid
 
         self.__logger = logger
         self.__library = library
@@ -165,7 +165,7 @@ class RunRecord:
         json.dump(metadata, md_res)
         md_res.close()
 
-        return RunRecord(logger, library, controller, state.get_uuid(), entry=entry)
+        return RunRecord(logger, library, controller, state.get_uuid(), entry=entry, event_uuid=event_uuid)
     
     def read(self, s_uuid: uuid.UUID):
         entry = self.__library.query({"tags": {"run": s_uuid.hex}}, limit=1)

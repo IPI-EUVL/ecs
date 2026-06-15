@@ -148,8 +148,6 @@ class ExperimentClient:
             handle.fail(msg)
             return
 
-        assert self.__preinit_handle is None
-
         self.__current_run = state
 
         self.__preinit_handle = handle
