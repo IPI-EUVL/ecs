@@ -244,6 +244,8 @@ class Entry:
         self.__res_path = None
         self.__registry = dict()
 
+        self.__quickload = quickload
+
         self.__tags = dict()
         if quickload:
             self.__name = name
@@ -292,6 +294,10 @@ class Entry:
         return self.__resource(filename, mode)
 
     def list_resources(self):
+        if self.__quickload:
+            self.__read_data()
+            self.__quickload = False
+
         return self.__registry.copy().items()
 
     def set_tag(self, key: str, value: str | float) -> None:
@@ -339,7 +345,9 @@ class Entry:
 
             for line in dat_file:
                 kv = line.strip().split(":")
-                assert len(kv) == 2
+                if len(kv) != 2:
+                    print(f"Skipping malformed registry line: {line.strip()}")
+                    continue
                 self.__registry[kv[0]] = kv[1]
 
         except (ValueError, IOError, IndexError) as exc:
@@ -348,6 +356,15 @@ class Entry:
             dat_file.close()
 
     def __write_metadata(self):
+        print(f"Writing metadata for entry with UUID: {self.__uuid} to folder: {self.__foldername}...")
+        if self.__quickload:
+            print("Quickload is enabled, reading existing metadata to populate registry...")
+
+            print("Current registry before quickload read:", self.__registry)
+            self.__read_data()  # Ensure registry is populated for quickload entries
+            self.__quickload = False  # Disable quickload after first access to ensure registry is up to date
+            print("Registry after quickload read:", self.__registry)
+
         file = self.__resource("registry.dat", "w")
 
         if self.__name.find("\n") != -1 or self.__description.find("\n") != -1:
