@@ -707,10 +707,10 @@ class LifecycleGUI:
 		"List (literal)",
 	)
 
-	def __init__(self, root, lifecycle_manager_uuid: uuid.UUID, own_window: bool = True):
+	def __init__(self, root, lifecycle_manager_uuid: uuid.UUID, own_window: bool = True, dds_ip: str = "127.0.0.1"):
 		self.root = root
 		self.__own_window = own_window
-		self.__interface = LifecycleInterface(lifecycle_manager_uuid)
+		self.__interface = LifecycleInterface(lifecycle_manager_uuid, dds_ip=dds_ip)
 
 		self.__snapshot = {
 			"rows": [],
