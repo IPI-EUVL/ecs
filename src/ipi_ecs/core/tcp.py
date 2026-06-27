@@ -248,7 +248,7 @@ class TCPSocket:
                     break
 
                 try:
-                    self._socket.send(data)
+                    self._socket.sendall(data)
                 except OSError:
                     self._closed()
                     break
