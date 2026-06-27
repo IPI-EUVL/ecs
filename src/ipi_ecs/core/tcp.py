@@ -196,8 +196,6 @@ class TCPSocket:
 
             #print(data)
 
-            if data == bytes([0x00]):
-                continue
             if data == CLOSE_R:
                 #print("Received shutdown request")
                 self._shutdown()
@@ -220,8 +218,9 @@ class TCPSocket:
             #print("split", chk, self.__buffer)
 
             if chk is not None:
-                self.__recv_queue.put(unescape_bytes(chk))
-                self._received_event.call()
+                if len(chk) > 0:
+                    self.__recv_queue.put(unescape_bytes(chk))
+                    self._received_event.call()
             else:
                 break
 
