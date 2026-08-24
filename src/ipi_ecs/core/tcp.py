@@ -196,6 +196,10 @@ class TCPSocket:
 
             #print(data)
 
+            if data == bytes([0x00]):
+                if len(self.__buffer) > 0:
+                    print("SINGLE FRAME DELIMITER WITH BUFFERED DATA " + self.__buffer.hex())
+
             if data == CLOSE_R:
                 #print("Received shutdown request")
                 self._shutdown()
