@@ -123,7 +123,7 @@ class ExperimentClient:
 
         if not ok:
             print("Cannot start:", reason.decode("utf-8"))
-            handle.fail((f"Cannot start {self.__client_name}: ").encode("utf-8") + reason)
+            handle.fail(reason)
             return
         
         handle.ret(f"{self.__client_name} can start.".encode("utf-8"))
@@ -137,7 +137,7 @@ class ExperimentClient:
         if not ok:
             print("Cannot start :", reason.decode("utf-8"))
             self.__logger.log("Preinit event called but cannot start " + self.__client_name + ": " + reason.decode("utf-8"), level="WARN", l_type="CTRL", subsystem=self.__client_name)
-            handle.fail((f"Cannot start {self.__client_name}: ").encode("utf-8") + reason)
+            handle.fail(reason)
             return
         
         self.__logger.log(f"Pre-initializing {self.__client_name}.", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="preinit_exp")
@@ -164,7 +164,7 @@ class ExperimentClient:
         if not ok:
             print("Cannot start:", reason.decode("utf-8"))
             self.__logger.log("Start event called but cannot start " + self.__client_name + ": " + reason.decode("utf-8"), level="WARN", l_type="CTRL", subsystem=self.__client_name)
-            handle.fail((f"Cannot start {self.__client_name}: ").encode("utf-8") + reason)
+            handle.fail(reason)
             return
         
         self.__logger.log(f"Starting {self.__client_name}.", level="INFO", l_type="CTRL", subsystem=self.__client_name, event="start_exp")
