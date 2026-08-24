@@ -1,6 +1,7 @@
 # src/ipi_ecs/cli/logging/tui_app.py
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, Callable
@@ -286,6 +287,7 @@ def run_tui(
             self._on_filter_uuid = on_filter_uuid
             origin = (ln.record.get("origin") or {})
             self._uuid = origin.get("uuid") if isinstance(origin.get("uuid"), str) else None
+            self._message = str(ln.record.get("msg", ""))
 
         def compose(self) -> ComposeResult:
             yield Vertical(
@@ -296,6 +298,9 @@ def run_tui(
                 ),
                 Horizontal(
                     Button("Filter UUID", id="filter_uuid"),
+                    Button("Copy UUID", id="copy_uuid"),
+                    Button("Copy message", id="copy_message"),
+                    Button("Copy as JSON", id="copy_json"),
                     Button("Close", id="close"),
                 ),
                 id="detail_modal",
@@ -304,9 +309,45 @@ def run_tui(
         def action_close(self) -> None:
             self.dismiss(None)
 
+        def _copy_text(self, text: str, label: str) -> None:
+            try:
+                copy_to_clipboard = getattr(self.app, "copy_to_clipboard", None)
+                if not callable(copy_to_clipboard):
+                    raise RuntimeError("clipboard unavailable")
+                copy_to_clipboard(text)
+                notify = getattr(self.app, "notify", None)
+                if callable(notify):
+                    notify(f"Copied {label}")
+            except Exception:
+                notify = getattr(self.app, "notify", None)
+                if callable(notify):
+                    notify(f"Could not copy {label}", severity="error")
+
+        def _copy_uuid(self) -> None:
+            if self._uuid:
+                self._copy_text(self._uuid, "UUID")
+
+        def _copy_message(self) -> None:
+            self._copy_text(self._message, "message")
+
+        def _copy_json(self) -> None:
+            self._copy_text(
+                json.dumps(self.ln.record, indent=2, ensure_ascii=False, default=str),
+                "JSON",
+            )
+
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "close":
                 self.dismiss(None)
+                return
+            if event.button.id == "copy_uuid":
+                self._copy_uuid()
+                return
+            if event.button.id == "copy_message":
+                self._copy_message()
+                return
+            if event.button.id == "copy_json":
+                self._copy_json()
                 return
             if event.button.id == "filter_uuid":
                 if callable(self._on_filter_uuid) and self._uuid:
