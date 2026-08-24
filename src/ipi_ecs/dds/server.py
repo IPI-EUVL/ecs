@@ -99,6 +99,13 @@ class _DDSServer:
                         s = self.__server.find_subsystem(s_uuid=s_uuid)
                         s.add_status_item(status)
 
+                        if status.get_severity() == StatusItem.STATE_ALARM:
+                            self.__logger.log(f"Subsystem {s.get_info().get_name()} reported error status: {status.get_message()}", level="ERROR", l_type="SW", subsystem="DDS Server")
+                        elif status.get_severity() == StatusItem.STATE_WARN:
+                            self.__logger.log(f"Subsystem {s.get_info().get_name()} reported warning status: {status.get_message()}", level="WARN", l_type="SW", subsystem="DDS Server")
+                        elif status.get_severity() == StatusItem.STATE_INFO:
+                            self.__logger.log(f"Subsystem {s.get_info().get_name()} reported info status: {status.get_message()}", level="DEBUG", l_type="SW", subsystem="DDS Server")
+
                     elif d[0] == MAGIC_CLEAR_STATUS_ITEM:
                         b_s_uuid, b_status = segment_bytes.decode(d[1:])
                         status = int.from_bytes(b_status, byteorder="big")
@@ -115,7 +122,7 @@ class _DDSServer:
                         value = b_value
                         self.__server.event_returned(s_uuid, e_uuid, status, value)
                 except Exception as e:
-                    self.__logger.log(f"Exception while trying to decode client message: {d}", level="ERROR", l_type="SW", subsystem="DDS Server")
+                    self.__logger.log(f"Exception while trying to decode client message: {d.hex()}", level="ERROR", l_type="SW", subsystem="DDS Server")
                     self.__server.handle_exception(e)
                     pass
                 
@@ -219,6 +226,7 @@ class _DDSServer:
                 else:
                     t.nak()
             except Exception as e:
+                self.__logger.log(f"Exception {e} while trying to decode transaction data: {t.get_data().hex()}", level="ERROR", l_type="SW", subsystem="DDS Server")
                 self.__server.handle_exception(e)
                 t.nak()
                 pass
@@ -367,7 +375,7 @@ class _DDSServer:
             
             return self.__client.get_uuid()
         
-        def subscribe(self, client, key):
+        def subscribe(self, client, key):   
             if self.__kv_subscribers.get(key) is None:
                 self.__kv_subscribers[key] = []
             
@@ -635,7 +643,7 @@ class _DDSServer:
         r = self.__clients_uuid.get(r_uuid)
 
         if r is None:
-            self.__log(f"Target publisher {r_uuid} to add subscriber not found, who are you?!", level="ERROR")
+            self.__log(f"Target publisher {r_uuid} to add subscriber to {key} not found, who are you?!", level="ERROR")
             return
 
         if s is None:

@@ -195,7 +195,7 @@ class _InProgressEvent:
         self.__state = EVENT_PENDING
         self.__reason = None
 
-        self.__last_update = time.time()
+        self.__last_update = time.time(), None
 
         self.__on_data_event = mt_events.Event()
 
@@ -241,7 +241,7 @@ class _InProgressEvent:
         else:
             v = data
 
-        self.__last_update = time.time()
+        self.__last_update = (time.time(), t_uuid)
         
         self.__results[t_uuid] = (status, v)
         self.__on_data_event.call()
@@ -942,7 +942,7 @@ class DDSClient:
             e = self.__in_progress_events.get(e_uuid)
 
             if e is None:
-                self.log("Received event return for an event that this subsystem did not send!", level="ERROR")
+                self.log("Received event return for an event that this subsystem did not send!", level="WARN")
                 return
             e.set_result(r_uuid, status, ret_value)
 
@@ -953,7 +953,7 @@ class DDSClient:
             e = self.__in_progress_events.get(e_uuid)
 
             if e is None:
-                self.log("Received event abort for an event that this subsystem did not send!", level="ERROR")
+                self.log("Attempted event abort for an event that this subsystem did not send!", level="ERROR")
                 return
             
             if e.is_in_progress():
@@ -1098,13 +1098,12 @@ class DDSClient:
                     #print(s, status, ret_value)
                     s.on_event_return(e_uuid, r_uuid, status, ret_value)
             except Exception as e:
-                self.__log(f"Error while parsing data: {d}", level="ERROR")
+                self.__log(f"Error while parsing data: {d.hex()}", level="ERROR")
 
                 for line in traceback.format_exception(None, e, e.__traceback__):
                     for split in line.split("\n"):
                         self.__logger.log(split, level="ERROR", subsystem="DDSClient", l_type="SW")
 
-                raise
 
 
     def __receive_transact(self):
@@ -1312,6 +1311,7 @@ class DDSClient:
     
     def __transop(self, data, await_type = KVP_RET_AWAIT, unpack_value = None):
         if not self.__is_ready:
+            raise IOError("Client is not connected to server yet!")
             return None
         
         if await_type == KVP_RET_HANDLE:
@@ -1328,6 +1328,7 @@ class DDSClient:
     def __on_transop_returned_await(self, awaiter : mt_events.Awaiter, unpack_value, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
             self.__log("TRANSOP transaction has been NAK'd", level="ERROR")
+            self.__log(f"Data of NAK'd transaction: {handle.get_data().hex()}", level="ERROR")
             awaiter.call(state=TRANSOP_STATE_REJ, reason=None)
             return
 
@@ -1348,6 +1349,7 @@ class DDSClient:
     def __on_transop_returned_handle(self, op_handle : "DDSClient.__TransOpHandle", unpack_value, handle : transactions.TransactionManager.OutgoingTransactionHandle):
         if handle.get_state() == transactions.TransactionManager.OutgoingTransactionHandle.STATE_NAK:
             self.__log("TRANSOP transaction has been NAK'd", level="ERROR")
+            self.__log(f"Data of NAK'd transaction: {handle.get_data().hex()}", level="ERROR")
             op_handle.set_state(TRANSOP_STATE_REJ)
             return
 
