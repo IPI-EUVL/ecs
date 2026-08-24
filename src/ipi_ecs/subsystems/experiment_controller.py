@@ -382,18 +382,21 @@ class ExperimentController:
 
             if self.__has_timed_out(self.__can_start_event_handle, 30):
                 self.__abort_run("Run start request timed out.")
+                self.__can_start_event_handle = None
             
             if self.__preinit_handle is not None and not self.__preinit_handle.is_in_progress():
                 self.__on_preinit_returned()
 
             if self.__has_timed_out(self.__preinit_handle, 30):
                 self.__abort_run("Preinit request timed out.")
+                self.__preinit_handle = None
 
             if self.__init_handle is not None and not self.__init_handle.is_in_progress():
                 self.__on_init_returned()
 
             if self.__has_timed_out(self.__init_handle, 30):
                 self.__abort_run("Init request timed out.")
+                self.__init_handle = None
 
             if self.__stop_handle is not None and not self.__stop_handle.is_in_progress():
                 self.__on_stop_returned()
@@ -401,6 +404,7 @@ class ExperimentController:
             if self.__has_timed_out(self.__stop_handle, 30):
                 self.__finalize_run("ABORTED", "Stop run request timed out.")
                 self.__run_record = None
+                self.__stop_handle = None
 
             self.__update_state()
 
@@ -461,7 +465,7 @@ class ExperimentController:
             return False
         
         t_initiated = event_handle.get_time_initiated()
-        last_update = event_handle.get_last_update()
+        last_update, l_uuid = event_handle.get_last_update()
 
         now = time.time()
 
@@ -471,6 +475,15 @@ class ExperimentController:
         if now - last_update < timeout:
             return False
         
+        self.__log(f"Event handle {event_handle} has timed out. Now: {now}, Initiated: {t_initiated}, Last update: {last_update}, Last update UUID: {l_uuid}", level="WARN")
+        
+        for r_uuid, state in event_handle.get_states().items():
+            code, reason = state
+            s_name = self.__require_subsystems.get(r_uuid, str(r_uuid))
+            result = event_handle.get_result(r_uuid)
+            self.__log(f"Subsystem {s_name} has status code {code} and reason {reason} with result {result}", level="WARN")
+
+
         return True
 
     def __required_subsystem_name(self, s_uuid: uuid.UUID) -> str:
