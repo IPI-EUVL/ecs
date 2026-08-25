@@ -110,6 +110,12 @@ class ExperimentClient:
             self.__stop_handle.ret(ret)
             
         self.__stop_handle = None
+
+    def _on_stop_feedback(self, reason: bytes) -> None:
+        """Renew a long-running terminal lifecycle event."""
+        handle = getattr(self, "_ExperimentClient__stop_handle", None)
+        if handle is not None:
+            handle.feedback(reason)
             
     
     def __on_can_start_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):

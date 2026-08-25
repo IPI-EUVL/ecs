@@ -601,7 +601,7 @@ class _LocalProperty(_KVHandlerBase):
             return (TRANSOP_STATE_REJ, E_WRITEONLY)
         
         if self.__value is None:
-            return (TRANSOP_STATE_REJ, E_NO_CACNE)
+            return (TRANSOP_STATE_REJ, E_NO_CACHE)
         
         return (TRANSOP_STATE_OK, self.__value)
     
@@ -1050,8 +1050,8 @@ class DDSClient:
                 continue
 
             if d == bytes([MAGIC_HANDSHAKE_SERVER]):
-                if self.__handshake_received:
-                    raise IOError("Handshake on existing connection!")
+                #if self.__handshake_received:
+                #    raise IOError("Handshake on existing connection!")
 
                 #print("Handshake received from ", self.__socket.remote())
                 self.__handshake_received = True
@@ -1218,6 +1218,9 @@ class DDSClient:
         t.ret(bytes([state]) + data)"""
 
     def __flush_transponder(self):
+        if not self.__socket.ok():
+            return
+
         while not self.__transactions_msg_out_queue.empty():
             m = self.__transactions_msg_out_queue.get()
 
@@ -1238,11 +1241,9 @@ class DDSClient:
         while stop_flag.run():
             e = self.__event_consumer.get()
 
-            if e == self.__E_MESSAGE:
-                self.__receive()
-            elif e == self.__E_TRANSACT_DATA_AVAIL:
-                self.__flush_transponder()
-            elif e == self.__E_CONNECTED:
+            self.__receive()
+            self.__flush_transponder()
+            if e == self.__E_CONNECTED:
                 self.__connected()
             elif e == self.__E_DISCONNECTED:
                 self.__disconnected()
@@ -1254,7 +1255,7 @@ class DDSClient:
             info = SubsystemInfo.decode(handle.get_data()[1:])
 
             if self.__subsystem_handles.get(info.get_uuid()) is None:
-                self.__log(f"Subsystem {info.get_name()} not found but was registered?!", level="ERROR")
+                self.__log(f"Subsystem {info.get_name()} not found but was successfully registered by me?!", level="ERROR")
                 return
             
             subsystem_handle = self.__subsystem_handles[info.get_uuid()]
@@ -1313,14 +1314,21 @@ class DDSClient:
         if not self.__is_ready:
             raise IOError("Client is not connected to server yet!")
             return None
-        
+
         if await_type == KVP_RET_HANDLE:
+            if not self.__is_ready:
+                return None
+
             ret_handle = _TransOpHandle()
 
             self.__transactions.send_transaction(data).then(self.__on_transop_returned_handle, [ret_handle, unpack_value])
             return ret_handle.get_handle()
         elif await_type == KVP_RET_AWAIT:
             ret_awaiter = mt_events.Awaiter()
+
+            if not self.__is_ready:
+                ret_awaiter.do_fail(state=TRANSOP_STATE_REJ, reason="Client not connected")
+                return ret_awaiter.get_handle()
 
             self.__transactions.send_transaction(data).then(self.__on_transop_returned_await, [ret_awaiter, unpack_value])
             return ret_awaiter.get_handle()
@@ -1396,17 +1404,31 @@ class DDSClient:
         self.__transactions.send_transaction(bytes([TRANSACT_REG_SUBSYSTEM]) + info.encode()).then(self.__transact_status_change)
 
     def send_status_item(self, s_uuid: uuid.UUID, status: StatusItem):
+        if not self.__is_ready:
+            return False
+
         self.__socket.put(bytes([MAGIC_UPDATE_STATUS_ITEM]) + segment_bytes.encode([s_uuid.bytes, status.encode()]))
+        return True
 
     def clear_status_item(self, s_uuid: uuid.UUID, code: int):
+        if not self.__is_ready:
+            return False
+
         self.__socket.put(bytes([MAGIC_CLEAR_STATUS_ITEM]) + segment_bytes.encode([s_uuid.bytes, code.to_bytes(length=1, byteorder="big")]))
+        return True
 
     def __refresh_subscriptions(self):
+        if not self.__is_ready:
+            return
+
         for l in self.__active_subscribers.values():
             for kv in l:
                 self.__socket.put(bytes([MAGIC_REQ_SUBSCRIBE]) + segment_bytes.encode([kv.get_remote().bytes, kv.get_key()]))
 
     def _add_active_subscriber(self, kv: _RemoteProperty):
+        if not self.__is_ready:
+            return
+
         if self.__active_subscribers.get(kv.get_remote()) is None:
             self.__active_subscribers[kv.get_remote()] = []
 
@@ -1428,7 +1450,11 @@ class DDSClient:
         return self.__remote_subsystem_update_event
     
     def send_event_feedback(self, e_uuid: uuid.UUID, s_uuid: uuid.UUID, state: int, v: bytes):
+        if not self.__is_ready:
+            return False
+
         self.__socket.put(bytes([MAGIC_EVENT_FEEDBACK]) + segment_bytes.encode([s_uuid.bytes, e_uuid.bytes, state.to_bytes(length=1, byteorder="big"), v]))
+        return True
 
     def __log(self, msg, level = "INFO", **data):
         if self.__logger is None:

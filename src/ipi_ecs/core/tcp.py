@@ -102,13 +102,6 @@ class TCPSocket:
 
         def get(self, *args, **argkw):
             return self.__q.get(*args, **argkw)
-        
-    class _SendQueueHandle:
-        def __init__(self, q : queue.Queue):
-            self.__q = q
-            
-        def put(self, *args, **argkw):
-            return self.__q.put(*args, **argkw)
 
     def __init__(self):
         self._socket = None
@@ -251,7 +244,7 @@ class TCPSocket:
                     break
 
                 try:
-                    self._socket.sendall(data)
+                    self._socket.send(data) # TODO changed from sendall for debug
                 except OSError:
                     self._closed()
                     break
@@ -303,9 +296,6 @@ class TCPSocket:
     
     def get_recv_queue(self):
         return self._ReceiveQueueHandle(self.__recv_queue)
-    
-    def get_send_queue(self):
-        return self._SendQueueHandle(self._send_queue)
 
     def empty(self):
         """

@@ -50,7 +50,7 @@ E_TRANSOP_TRANSACTIPN_REJ = b"Transaction rejected"
 E_READONLY = b"Value is read-only."
 E_WRITEONLY = b"Value is write-only."
 E_INVALID_VALUE = b"Value is invalid."
-E_NO_CACNE = b"Value has not been set yet!"
+E_NO_CACHE = b"Value has not been set yet!"
 E_EVENT_ABORTED = b"Event was aborted or timed out."
 
 OP_OK = b"Operation completed successfully"
