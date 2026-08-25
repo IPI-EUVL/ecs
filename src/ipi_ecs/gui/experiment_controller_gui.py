@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+import json
 import time
 import math
 import threading
@@ -37,10 +38,13 @@ class ExperimentInterface:
         self.__current_experiment = None
         self.__current_state = None
         self.__current_reasons = None
+        self.__automation_owner_name = None
+        self.__status_lock = threading.Lock()
 
         self.__status_kv = None
         self.__reasons_kv = None
         self.__settings_kv = None
+        self.__automation_lease_kv = None
 
         self.__stopped_run_queue = Queue()
 
@@ -71,6 +75,14 @@ class ExperimentInterface:
         self.__stop_kv.on_new_data_received(self.__on_stop_update)
 
         self.__settings_kv = handle.add_remote_kv(self.ctl_uuid, subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"settings", False, True, True))
+        self.__automation_lease_kv = handle.add_remote_kv(
+            self.ctl_uuid,
+            subsystem.KVDescriptor(types.ByteTypeSpecifier(), b"automation_lease", True, True, False),
+        )
+        self.__automation_lease_kv.on_new_data_received(self.__on_automation_lease_update)
+        initial_lease = self.__automation_lease_kv.try_get()
+        if initial_lease is not None:
+            initial_lease.then(self.__on_automation_lease_update).catch(lambda *_args, **_kwargs: None)
 
         self.__start_experiment_event_sender = handle.add_event_provider(f"prepare_{self.exp_type}".encode("utf-8"))
         self.__stop_experiment_event_sender = handle.add_event_provider(f"stop_{self.exp_type}".encode("utf-8"))
@@ -100,16 +112,32 @@ class ExperimentInterface:
         if len(b_status) != 2:
             print("Invalid status update received: ", b_status)
             return
-        
-        self.__current_state = int.from_bytes(b_status[0], byteorder="big")
 
-        if self.__current_state != ExperimentController.RUN_STATE_STOPPED:
-            self.__current_experiment = RunState.decode(b_status[1].decode("utf-8"))
+        state = int.from_bytes(b_status[0], byteorder="big")
+        if state != ExperimentController.RUN_STATE_STOPPED:
+            experiment = RunState.decode(b_status[1].decode("utf-8"))
         else:
-            self.__current_experiment = None
+            experiment = None
+
+        with self.__status_lock:
+            self.__current_state = state
+            self.__current_experiment = experiment
 
     def __on_reasons_update(self, n_reasons: bytes):
-        self.__current_reasons = n_reasons
+        with self.__status_lock:
+            self.__current_reasons = n_reasons
+
+    def __on_automation_lease_update(self, value) -> None:
+        try:
+            decoded = json.loads(bytes(value).decode("utf-8"))
+            owner = decoded.get("owner_name") if isinstance(decoded, dict) else None
+            owner_name = None if owner is None else str(owner).strip() or None
+            if owner_name == "None":
+                owner_name = None
+        except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            owner_name = "Unknown automation owner"
+        with self.__status_lock:
+            self.__automation_owner_name = owner_name
 
     def set_name(self, name: str, ret_type = client.KVP_RET_AWAIT):
         if self.__settings_kv is None:
@@ -140,13 +168,24 @@ class ExperimentInterface:
         return self.__stop_experiment_event_sender.call(reason.encode("utf-8"), [])
     
     def get_state(self):
-        return self.__current_state
+        with self.__status_lock:
+            return self.__current_state
     
     def get_experiment(self):
-        return self.__current_experiment
+        with self.__status_lock:
+            return self.__current_experiment
 
     def get_experiment_reasons(self):
-        return self.__current_reasons
+        with self.__status_lock:
+            return self.__current_reasons
+
+    def get_status_snapshot(self):
+        with self.__status_lock:
+            return self.__current_state, self.__current_experiment, self.__current_reasons
+
+    def get_automation_owner(self) -> str | None:
+        with self.__status_lock:
+            return self.__automation_owner_name
     
     def close(self):
         self.__client.close()
@@ -156,9 +195,10 @@ class ExperimentInterface:
         return self.ctl_uuid
     
     def get_experiment_uuid(self):
-        if self.__current_experiment is not None:
-            return self.__current_experiment.get_uuid()
-        return None
+        with self.__status_lock:
+            if self.__current_experiment is not None:
+                return self.__current_experiment.get_uuid()
+            return None
     
     def set_kw(self, key: str, value: str, ret_type = client.KVP_RET_AWAIT):
         if self.__settings_kv is None:
@@ -175,7 +215,7 @@ class ExperimentControllerGUI:
         self.root = root
         self.__own_window = own_window
         if self.__own_window and hasattr(root, "title"):
-            root.title("Experiment Controller GUI")
+            root.title("Exposure Controller GUI")
 
         self.__itf = itf
 
@@ -215,7 +255,7 @@ class ExperimentControllerGUI:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.__status_frame = ttk.LabelFrame(main_frame, text="Current Experiment Status", padding=10)
+        self.__status_frame = ttk.LabelFrame(main_frame, text="Current Exposure Status", padding=10)
         self.__status_frame.pack(fill=tk.BOTH, expand=True)
         self.__status_label = ttk.Label(self.__status_frame, text="No experiment running.", style="Status.TLabel")
         self.__status_label.pack(side=tk.TOP, pady=5)
@@ -237,12 +277,14 @@ class ExperimentControllerGUI:
         self.__control_frame = ttk.LabelFrame(main_frame, text="Controls", padding=10)
         self.__control_frame.pack(fill=tk.BOTH, expand=True)
 
-        start_button = ttk.Button(self.__control_frame, text="Start Experiment", command=self.__on_start_experiment)
-        start_button.pack(side=tk.LEFT, padx=5)
-        stop_button = ttk.Button(self.__control_frame, text="Stop Experiment", command=self.__on_stop_experiment)
-        stop_button.pack(side=tk.LEFT, padx=5)
+        self.__start_button = ttk.Button(self.__control_frame, text="Start Exposure", command=self.__on_start_experiment)
+        self.__start_button.pack(side=tk.LEFT, padx=5)
+        self.__stop_button = ttk.Button(self.__control_frame, text="Stop Exposure", command=self.__on_stop_experiment)
+        self.__stop_button.pack(side=tk.LEFT, padx=5)
+        self.__automation_status_label = ttk.Label(self.__control_frame, text="")
+        self.__automation_status_label.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.__data_frame = ttk.LabelFrame(main_frame, text="Experiment Settings", padding=10)
+        self.__data_frame = ttk.LabelFrame(main_frame, text="Exposure Settings", padding=10)
         self.__data_frame.pack(fill=tk.BOTH, expand=True)
         self.__data_frame.columnconfigure(1, weight=1)
 
@@ -280,34 +322,41 @@ class ExperimentControllerGUI:
         
 
     def __updater(self):
-        self.__update_values()
-        self.root.after(50, self.__updater)
+        try:
+            self.__update_values()
+        finally:
+            self.root.after(50, self.__updater)
 
     def __update_values(self):
+        state, experiment, reasons = self.__itf.get_status_snapshot()
+
         if (self.__op_event_handle is None and self.__op_transop_handle is None) or self.__current_op in ["Starting", "Stopping"]:
-            if self.__itf.get_experiment() is not None:
-                exp = self.__itf.get_experiment()
-                state_str = {ExperimentController.RUN_STATE_PREINIT: "Preinitialization", ExperimentController.RUN_STATE_INIT: "Initialization", ExperimentController.RUN_STATE_RUNNING: "Running", ExperimentController.RUN_STATE_STOPPED: "Stopped"}.get(self.__itf.get_state(), "Unknown")
+            if experiment is not None:
+                state_str = {
+                    ExperimentController.RUN_STATE_CAN_START: "Checking readiness",
+                    ExperimentController.RUN_STATE_PREINIT: "Preinitialization",
+                    ExperimentController.RUN_STATE_INIT: "Initialization",
+                    ExperimentController.RUN_STATE_RUNNING: "Running",
+                    ExperimentController.RUN_STATE_STOPPING: "Stopping",
+                    ExperimentController.RUN_STATE_STOPPED: "Stopped",
+                }.get(state, "Unknown")
                 self.__status_label.config(text=f"Current state: {state_str}")
 
-                self.__status_style.configure("Status.TLabel", background={"Preinitialization": "yellow", "Initialization": "orange", "Running": "green", "Stopped": "red"}.get(state_str, "gray"))
+                self.__status_style.configure("Status.TLabel", background={"Checking readiness": "khaki", "Preinitialization": "yellow", "Initialization": "orange", "Running": "green", "Stopping": "tomato", "Stopped": "red"}.get(state_str, "gray"))
             else:
                 self.__status_label.config(text="No experiment running.")
                 self.__status_style.configure("Status.TLabel", background="lightgray")
         else:
             self.__status_label.config(text=f"{self.__current_op}...")
 
-        if self.__itf.get_experiment() is not None:
-            exp = self.__itf.get_experiment().get_settings()
-            exp_dict = exp.get_dict()
-
+        if experiment is not None:
             """for key, entry, type_ in self.__settings_entries:
                 value = exp_dict.get(key)
                 self.__set_entry_value(entry, value)
                 entry.config(state=tk.DISABLED)"""
 
-            self.__uuid_label.config(text=f"Run UUID: ...{str(self.__itf.get_experiment_uuid())[-8:]}")
-            self.__reasons_label.config(text=self.__format_reasons(self.__itf.get_experiment_reasons()))
+            self.__uuid_label.config(text=f"Run UUID: ...{str(experiment.get_uuid())[-8:]}")
+            self.__reasons_label.config(text=self.__format_reasons(reasons))
         else:
             """for key, entry, type_ in self.__settings_entries:
                 entry.config(state=tk.NORMAL)"""
@@ -525,16 +574,22 @@ class ExperimentControllerGUI:
 
     def __update_gui_enabled(self):
         should_enable_controls = self.__op_event_handle is None and self.__op_transop_handle is None and not self.__settings_update_active
-        should_enable_data = self.__itf.get_experiment() is None and should_enable_controls
+        automation_owner = self.__itf.get_automation_owner()
+        should_enable_start = should_enable_controls and automation_owner is None
+        should_enable_data = self.__itf.get_experiment() is None and should_enable_start
+        should_enable_stop = not (
+            self.__current_op == "Stopping" and self.__op_event_handle is not None
+        )
 
-        self.__set_controls_enabled(should_enable_controls)
+        self.__set_controls_enabled(should_enable_start, should_enable_stop)
         self.__set_data_controls_enabled(should_enable_data)
+        self.__automation_status_label.config(
+            text="" if automation_owner is None else f"Automation held by {automation_owner}"
+        )
 
-    def __set_controls_enabled(self, enabled: bool):
-        return
-        state = tk.NORMAL if enabled else tk.DISABLED
-        for child in self.__control_frame.winfo_children():
-            child.config(state=state)
+    def __set_controls_enabled(self, start_enabled: bool, stop_enabled: bool):
+        self.__start_button.config(state=tk.NORMAL if start_enabled else tk.DISABLED)
+        self.__stop_button.config(state=tk.NORMAL if stop_enabled else tk.DISABLED)
 
     def __set_data_controls_enabled(self, enabled: bool):
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -602,7 +657,11 @@ class ExperimentControllerGUI:
         self.__current_op = "Starting"
 
     def __on_stop_experiment(self):
-        self.__op_event_handle = self.__itf.stop_experiment("Stopped by user.")
+        event_handle = self.__itf.stop_experiment("Stopped by user.")
+        if event_handle is None:
+            self.__alert("Stop request could not be sent because the exposure controller is not connected.")
+            return
+        self.__op_event_handle = event_handle
         self.__current_op = "Stopping"
 
 UUID_EXPOSURE_CONTROLLER = uuid.uuid3(uuid.NAMESPACE_OID, "Exposure Controller")
