@@ -4,14 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipi-ecs"
-version = "0.1.6"
+version = "0.1.7"
 description = "IPI EUVL experiment control system"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
   "segment-bytes",
   "mt-events>=0.1.2",
   "platformdirs>=4.2",
+  "portalocker>=4.1,<5",
   "prompt_toolkit>=3.0",
   "python-dateutil>=2.9",
   "rich>=13",
