@@ -166,9 +166,9 @@ class ArchiveView:
     View into a single archive directory (including 'current').
     Provides query/follow/windowed reads suitable for CLI *and* GUI.
     """
-    def __init__(self, archive_dir: Path):
+    def __init__(self, archive_dir: Path, *, read_only: bool = False, immutable: bool = False):
         self.archive_dir = archive_dir
-        self.reader = DBJournalReader(archive_dir)
+        self.reader = DBJournalReader(archive_dir, read_only=read_only, immutable=immutable)
 
     def close(self) -> None:
         self.reader.close()
@@ -312,13 +312,20 @@ class LogViewer:
 
     CLI and GUI can both use this.
     """
-    def __init__(self, log_dir: Path | None, *, env_var: str = ENV_LOG_DIR_DEFAULT):
+    def __init__(
+        self,
+        log_dir: Path | None,
+        *,
+        env_var: str = ENV_LOG_DIR_DEFAULT,
+        read_only: bool = False,
+    ):
         resolved = resolve_log_dir(log_dir, env_var)
 
         # If user pointed directly at an archive dir, treat it as a fixed archive view.
         self._direct_archive = (resolved / "index.sqlite3").exists()
         self._resolved = resolved
         self.env_var = env_var
+        self.read_only = read_only
 
     @property
     def log_root(self) -> Path:
@@ -326,24 +333,35 @@ class LogViewer:
             raise RuntimeError("log_root is not available when log_dir points directly at an archive directory")
         return self._resolved
 
+    @property
+    def is_direct_archive(self) -> bool:
+        return self._direct_archive
+
     def open_archive(self, archive: str | None = None) -> ArchiveView:
         if self._direct_archive:
             if archive:
                 raise ValueError("--archive cannot be used when log_dir points directly at an archive directory")
-            return ArchiveView(self._resolved)
+            return ArchiveView(self._resolved, read_only=self.read_only, immutable=self.read_only)
 
         if archive is None or archive == "current":
-            return ArchiveView(self.log_root / "current")
-        return ArchiveView(self.log_root / "archives" / archive)
+            return ArchiveView(self.log_root / "current", read_only=self.read_only)
+        return ArchiveView(self.log_root / "archives" / archive, read_only=self.read_only, immutable=self.read_only)
 
     # ----------------------------
     # Archive helpers
     # ----------------------------
     @staticmethod
-    def _read_next_line_from_index(db_path: Path) -> int:
+    def _read_next_line_from_index(db_path: Path, *, read_only: bool = False, immutable: bool = False) -> int:
         if not db_path.exists():
             return 0
-        conn = sqlite3.connect(str(db_path))
+        if read_only:
+            uri = f"{db_path.resolve().as_uri()}?mode=ro"
+            if immutable:
+                uri += "&immutable=1"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only=ON")
+        else:
+            conn = sqlite3.connect(str(db_path))
         try:
             cur = conn.execute("SELECT v FROM meta WHERE k='next_line'")
             row = cur.fetchone()
@@ -368,6 +386,8 @@ class LogViewer:
 
         NOTE: Stop the logger before calling this (especially on Windows).
         """
+        if self.read_only:
+            raise RuntimeError("Cannot archive from a read-only log viewer")
         if self._direct_archive:
             raise RuntimeError("Cannot archive when log_dir points directly at an archive directory")
 
@@ -396,12 +416,20 @@ class LogViewer:
         info = self._archive_info(name, dest_dir)
         return info
 
-    def _archive_info(self, name: str, archive_dir: Path) -> ArchiveInfo:
+    def _archive_info(self, name: str, archive_dir: Path, *, immutable: bool | None = None) -> ArchiveInfo:
         db = archive_dir / "index.sqlite3"
         if not db.exists():
             return ArchiveInfo(name, archive_dir, 0, 0, 0, 0)
 
-        conn = sqlite3.connect(str(db))
+        use_immutable = self.read_only if immutable is None else immutable
+        if self.read_only:
+            uri = f"{db.resolve().as_uri()}?mode=ro"
+            if use_immutable:
+                uri += "&immutable=1"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only=ON")
+        else:
+            conn = sqlite3.connect(str(db))
         try:
             srow = conn.execute(
                 "SELECT MIN(start_ts_ns), MAX(COALESCE(end_ts_ns, start_ts_ns)) FROM segments"
@@ -414,8 +442,18 @@ class LogViewer:
         finally:
             conn.close()
 
-        end_line = self._read_next_line_from_index(db)
+        end_line = self._read_next_line_from_index(db, read_only=self.read_only, immutable=use_immutable)
         return ArchiveInfo(name, archive_dir, start_line, end_line, start_ts_ns, end_ts_ns)
+
+    def current_archive_info(self) -> ArchiveInfo:
+        if self._direct_archive:
+            return self._archive_info("current", self._resolved, immutable=self.read_only)
+
+        current_dir = self.log_root / "current"
+        if not (current_dir / "index.sqlite3").is_file():
+            raise FileNotFoundError(f"No current archive found at: {current_dir}")
+        # The active archive must observe a writer's WAL, unlike immutable completed archives.
+        return self._archive_info("current", current_dir, immutable=False)
 
     def list_archives(self, *, since: str | None = None, until: str | None = None) -> list[ArchiveInfo]:
         """
@@ -433,7 +471,7 @@ class LogViewer:
 
         items: list[ArchiveInfo] = []
         for p in sorted([x for x in archives_dir.iterdir() if x.is_dir()]):
-            info = self._archive_info(p.name, p)
+            info = self._archive_info(p.name, p, immutable=self.read_only)
 
             # overlap filter (if archive has 0 timestamps, don't filter it out)
             if since_ns is not None and info.end_ts_ns and info.end_ts_ns < since_ns:
@@ -452,7 +490,7 @@ class LogViewer:
         if self._direct_archive:
             # If user pointed at a single archive, we can't know other archives.
             # Still: we can check if the line exists in this archive by range.
-            info = self._archive_info("archive", self._resolved)
+            info = self._archive_info("archive", self._resolved, immutable=self.read_only)
             return info if info.start_line <= line < info.end_line_exclusive else None
 
         candidates: list[ArchiveInfo] = []
@@ -460,7 +498,7 @@ class LogViewer:
         # current
         current_dir = self.log_root / "current"
         if (current_dir / "index.sqlite3").exists():
-            candidates.append(self._archive_info("current", current_dir))
+            candidates.append(self._archive_info("current", current_dir, immutable=False))
 
         # archives
         for info in self.list_archives():

@@ -8,9 +8,9 @@ from typing import Any, Iterable
 from ipi_ecs.logging.index import SQLiteIndex
 
 class DBJournalReader:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, read_only: bool = False, immutable: bool = False):
         self.root = root
-        self.index = SQLiteIndex(root / "index.sqlite3")
+        self.index = SQLiteIndex(root / "index.sqlite3", read_only=read_only, immutable=immutable)
 
     def close(self) -> None:
         self.index.close()

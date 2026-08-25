@@ -130,14 +130,29 @@ class SQLiteIndex:
         <segment>.jsonl (or similar)
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, read_only: bool = False, immutable: bool = False):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.read_only = read_only
+        self.immutable = immutable
+        if immutable and not read_only:
+            raise ValueError("Immutable log indexes must be opened read-only.")
+        if read_only:
+            if not self.db_path.is_file():
+                raise FileNotFoundError(f"Log index does not exist: {self.db_path}")
+            uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+            if immutable:
+                uri += "&immutable=1"
+            self.conn = sqlite3.connect(uri, uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.executescript(DDL)
-        self._ensure_next_line()
+        if read_only:
+            self.conn.execute("PRAGMA query_only=ON")
+        else:
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self.conn.executescript(DDL)
+            self._ensure_next_line()
 
     def close(self) -> None:
         self.conn.close()
