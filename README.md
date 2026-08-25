@@ -39,6 +39,12 @@ Primarily built to support our in-house EUV source system, but the core pieces h
 - **Data recording** services for capturing relevant streams/state.\*
 Intended use case is to record high-rate instrument data that cannot neatly fit into the logging system (i.e. exposure UV intensity over time per pulse)
 
+### Record concurrency and event journals
+- **Registry safety:** resource declarations are protected by a per-record cross-process sidecar lock and are published by fsynced same-directory atomic replacement. Readers observe either the prior complete registry or the new complete registry.
+- **Metadata safety:** tag, name, description, and distinct-resource registrations merge independently. A resource file still has one logical content writer; concurrent writes to the same resource name are not a supported synchronization mechanism.
+- **Run-event journals:** new run records include a durable, fsynced `run_events.ndjson` resource. The experiment controller is the single writer; producers submit immutable, idempotent events over DDS. Journal stream checkpoints make missing or incomplete producer histories visible without interrupting an exposure.
+- **Writer-host scope:** the current guarantee is for multiple processes on one dataset writer host. Multi-host writers and unknown network filesystem locking semantics require a future dataset-level writer-host lease and deployment conformance check.
+
 ### UI + operator tooling*
 - **Terminal-oriented UI** (TUI) options for interactive operation.
 - **Tk-based UI** components for GUI apps.

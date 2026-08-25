@@ -1,26 +1,144 @@
 import multiprocessing
+import math
 import os
-import pickle
 import queue
 import time
 import traceback
 import uuid
-import mt_events
 import segment_bytes
 import json
 
-from enum import Enum
+from dataclasses import replace
 
 from ipi_ecs.core import daemon
 import ipi_ecs.dds.subsystem as subsystem
-import ipi_ecs.dds.types as types
 import ipi_ecs.dds.client as client
 import ipi_ecs.dds.magics as magics
 import ipi_ecs.core.tcp as tcp
-from ipi_ecs.dds.magics import *
+from ipi_ecs.dds.magics import EVENT_IN_PROGRESS, EVENT_OK, OP_IN_PROGRESS, OP_OK
 
 from ipi_ecs.logging.client import LogClient
 from ipi_ecs.db.db_library import Entry, Library
+from ipi_ecs.subsystems.run_events import (
+    RUN_EVENT_RESOURCE,
+    RUN_EVENT_RESOURCE_TYPE,
+    STREAM_END_KIND,
+    STREAM_EXPECTED_KIND,
+    STREAM_START_KIND,
+    RunEvent,
+    RunEventStream,
+    append_run_event,
+    load_run_event_timeline,
+    run_event_stream_id,
+)
+
+PREPARE_RUN_TAGS_VERSION = 1
+AUTOMATION_LEASE_SCHEMA_VERSION = 1
+_RESERVED_RUN_TAGS = frozenset({
+    "experiment",
+    "run",
+    "version",
+    "status",
+    "abort_reason",
+})
+
+
+def _normalize_run_tags(tags, reserved_keys=()) -> dict[str, str | int | float]:
+    if not isinstance(tags, dict):
+        raise ValueError("Run tags must be a JSON object.")
+
+    reserved = _RESERVED_RUN_TAGS | frozenset(reserved_keys)
+    normalized = {}
+    for key, value in tags.items():
+        if not isinstance(key, str) or not key or key != key.strip() or len(key) > 128:
+            raise ValueError("Run tag keys must be non-empty trimmed strings of at most 128 characters.")
+        if key in reserved or key.startswith("state_"):
+            raise ValueError(f"Run tag {key!r} is reserved.")
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError(f"Run tag {key!r} must contain a string or finite number.")
+        if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+            raise ValueError(f"Run tag {key!r} must contain a finite number.")
+        normalized[key] = value
+    return normalized
+
+
+def encode_prepare_run_tags(tags: dict[str, str | int | float]) -> bytes:
+    normalized = _normalize_run_tags(tags)
+    return json.dumps(
+        {"version": PREPARE_RUN_TAGS_VERSION, "tags": normalized},
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def decode_prepare_run_tags(payload: bytes, reserved_keys=()) -> dict[str, str | int | float]:
+    if payload is None or len(payload) == 0:
+        return {}
+    if not isinstance(payload, bytes) or len(payload) > 64 * 1024:
+        raise ValueError("Prepare-run tag payload must be at most 64 KiB of bytes.")
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Prepare-run tag payload is not valid UTF-8 JSON.") from exc
+    if not isinstance(decoded, dict) or set(decoded) != {"version", "tags"}:
+        raise ValueError("Prepare-run tag payload must contain only version and tags.")
+    if decoded["version"] != PREPARE_RUN_TAGS_VERSION:
+        raise ValueError(f"Unsupported prepare-run tag payload version {decoded['version']!r}.")
+    return _normalize_run_tags(decoded["tags"], reserved_keys)
+
+
+class AutomationLease:
+    def __init__(self):
+        self.owner_uuid: uuid.UUID | None = None
+        self.owner_name = ""
+        self.acquired_at: float | None = None
+
+    def acquire(self, requester: uuid.UUID, owner_name: str, now: float) -> tuple[bool, str]:
+        normalized_name = owner_name.strip()
+        if not normalized_name or len(normalized_name) > 128:
+            return False, "Automation owner name must contain 1-128 characters."
+        if self.owner_uuid not in (None, requester):
+            return False, f"Exposure automation is owned by {self.owner_name} ({self.owner_uuid})."
+        if self.owner_uuid is None:
+            self.owner_uuid = requester
+            self.owner_name = normalized_name
+            self.acquired_at = float(now)
+        return True, f"Exposure automation lease held by {self.owner_name}."
+
+    def release(self, requester: uuid.UUID) -> tuple[bool, str]:
+        if self.owner_uuid is None:
+            return True, "Exposure automation lease is already free."
+        if self.owner_uuid != requester:
+            return False, f"Exposure automation is owned by {self.owner_name} ({self.owner_uuid})."
+        self.clear()
+        return True, "Exposure automation lease released."
+
+    def can_start(self, requester: uuid.UUID) -> tuple[bool, str]:
+        if self.owner_uuid in (None, requester):
+            return True, ""
+        return False, f"Exposure automation is owned by {self.owner_name} ({self.owner_uuid})."
+
+    def can_update_settings(self, requester: uuid.UUID, run_active: bool) -> tuple[bool, str]:
+        if run_active:
+            return False, "Exposure settings cannot change while a run is active."
+        return self.can_start(requester)
+
+    def clear(self) -> None:
+        self.owner_uuid = None
+        self.owner_name = ""
+        self.acquired_at = None
+
+    def encode(self) -> bytes:
+        return json.dumps(
+            {
+                "schema_version": AUTOMATION_LEASE_SCHEMA_VERSION,
+                "owner_uuid": str(self.owner_uuid) if self.owner_uuid is not None else None,
+                "owner_name": self.owner_name or None,
+                "acquired_at": self.acquired_at,
+            },
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 class RunSettings:
     data = {
@@ -43,10 +161,10 @@ class RunSettings:
         return self.data.copy()
     
     def set_attr(self, key: str, value):
-        if not key in self.data:
+        if key not in self.data:
             raise ValueError(f"Key '{key}' not found in RunSettings.")
         
-        print(f"Setting {key} to {value} of type {type(value)} which is currently of type {type(self.data[key])}")
+        #print(f"Setting {key} to {value} of type {type(value)} which is currently of type {type(self.data[key])}")
         
         self.data[key] = type(self.data[key])(value) if key in self.data else value
 
@@ -116,7 +234,7 @@ class RunState:
         return self.__type
 
 class RunRecord:
-    CURRENT_DATA_VERSION = 1
+    CURRENT_DATA_VERSION = 2
 
     def __init__(self, logger: LogClient, library: Library, controller: "ExperimentController", r_uuid: uuid.UUID, entry: Entry = None, event_uuid: uuid.UUID = None):
         self.__entry = entry
@@ -136,7 +254,15 @@ class RunRecord:
             self.read(self.__run_uuid)
 
     @staticmethod
-    def create(logger: LogClient, library: Library, state: RunState, settings: RunSettings, controller: "ExperimentController"):
+    def create(
+        logger: LogClient,
+        library: Library,
+        state: RunState,
+        settings: RunSettings,
+        controller: "ExperimentController",
+        run_tags: dict[str, str | int | float] | None = None,
+    ):
+        print("Creating run record for run with UUID:", state.get_uuid(), "and type:", state.get_type())
         name = state.get_name() if state.get_name() is not None else f"Run {str(state.get_uuid())[-8:]}"
         desc = state.get_description() if state.get_description() is not None else f"Run on {time.ctime()}"
         entry = library.create_entry(name, desc)
@@ -148,7 +274,10 @@ class RunRecord:
         entry.set_tag("experiment", state.get_type())
         entry.set_tag("run", state.get_uuid().hex)
         entry.set_tag("version", RunRecord.CURRENT_DATA_VERSION)
+        for key, value in _normalize_run_tags(run_tags or {}, settings.get_keys()).items():
+            entry.set_tag(key, value)
 
+        print("Beginning event for run with UUID:", state.get_uuid(), "and entry UUID:", entry.get_uuid())
         event_uuid = logger.begin_event("RUN", name, event_id=str(state.get_uuid()), subsystem=controller.name, run=state.get_dict(), exp_type=state.get_type())
 
         res = entry.resource("run.json", "run_state", "w")
@@ -165,9 +294,13 @@ class RunRecord:
         json.dump(metadata, md_res)
         md_res.close()
 
+        with entry.resource(RUN_EVENT_RESOURCE, RUN_EVENT_RESOURCE_TYPE, "wb"):
+            pass
+
         return RunRecord(logger, library, controller, state.get_uuid(), entry=entry, event_uuid=event_uuid)
     
     def read(self, s_uuid: uuid.UUID):
+        #print("Reading run record for run with UUID:", s_uuid)
         entry = self.__library.query({"tags": {"run": s_uuid.hex}}, limit=1)
 
         if entry is None or len(entry) == 0:
@@ -178,7 +311,7 @@ class RunRecord:
         self.__entry = entry # Defer reading until accessing state or metadata to avoid unnecessary reads
     
     def __read_from_entry(self, entry: Entry):
-        print("Reading run record from entry with UUID:", entry.get_uuid(), "and tags:", entry.get_tags())
+        #print("Reading run record from entry with UUID:", entry.get_uuid(), "and tags:", entry.get_tags())
         res = entry.resource("run.json", "run_state", "r")
         run = RunState.decode(res.read())
         res.close()
@@ -199,6 +332,8 @@ class RunRecord:
         self.__metadata = metadata
         self.__end_metadata = end_metadata
         self.__event_uuid = metadata.get("event_uuid", None)
+
+        #print("Read run record from entry with UUID:", entry.get_uuid(), "and tags:", entry.get_tags())
 
     def set_name(self, name: str):
         if self.__entry is not None:
@@ -227,7 +362,20 @@ class RunRecord:
             return self.__entry.get_tags()
         return {}
 
+    def append_event(self, event: RunEvent) -> bool:
+        if self.__entry is None:
+            raise RuntimeError("Run record has no database entry.")
+        if event.run_id != self.__run_uuid:
+            raise ValueError("Run event does not belong to this run record.")
+        return append_run_event(self.__entry, event)
+
+    def get_event_timeline(self):
+        if self.__entry is None:
+            raise RuntimeError("Run record has no database entry.")
+        return load_run_event_timeline(self.__entry)
+
     def write_end(self, state: RunState, status: str, reason: str):
+        print("Writing end metadata for run with UUID:", state.get_uuid(), "status:", status, "reason:", reason)
         if self.__entry is not None:
             md_res = self.__entry.resource("end_metadata.json", "metadata", "w")
             json.dump({
@@ -244,7 +392,8 @@ class RunRecord:
             self.__entry.set_tag("status", status)
             self.__entry.set_tag("abort_reason", reason)
 
-            self.__logger.end_event(self.__event_uuid, status=status, reason=reason)
+        print("Ending event for run with UUID:", state.get_uuid(), "status:", status, "reason:", reason, "event UUID:", self.__event_uuid)
+        self.__logger.end_event(self.__event_uuid, status=status, reason=reason)
 
     def get_record(self):
         return self.__entry
@@ -258,13 +407,13 @@ class RunRecord:
     
     def get_metadata(self):
         if self.__metadata is None and self.__entry is not None:
-            print("Metadata is None, reading from entry...")
+            #print("Metadata is None, reading from entry...")
             self.__read_from_entry(self.__entry)
         return self.__metadata
     
     def get_end_metadata(self):
         if self.__end_metadata is None and self.__entry is not None:
-            print("End metadata is None, reading from entry...")
+            #print("End metadata is None, reading from entry...")
             self.__read_from_entry(self.__entry)
         return self.__end_metadata
 
@@ -278,6 +427,17 @@ class ExperimentController:
     RUN_STATE_RUNNING = 2
     RUN_STATE_STOPPING = 3
     RUN_STATE_STOPPED = 4
+    RUN_STATE_NAMES = {
+        RUN_STATE_CAN_START: "CAN_START",
+        RUN_STATE_PREINIT: "PREINIT",
+        RUN_STATE_INIT: "INIT",
+        RUN_STATE_RUNNING: "RUNNING",
+        RUN_STATE_STOPPING: "STOPPING",
+        RUN_STATE_STOPPED: "STOPPED",
+    }
+    RUN_EVENT_RETRY_SECONDS = 5.0
+    RUN_EVENT_RETRY_INTERVAL_SECONDS = 0.1
+    MAX_RUN_EVENT_PAYLOAD_BYTES = 256 * 1024
 
     name = "ExperimentController"
     exp_type = "my_experiment"
@@ -286,6 +446,7 @@ class ExperimentController:
         self.__run = True
 
         self.name = name
+        self.uuid = s_uuid
         self.exp_type = exp_type
         self.data_path = data_path
 
@@ -331,12 +492,22 @@ class ExperimentController:
 
         self.__stop_request_handle = None
 
+        self.__automation_lease = AutomationLease()
+        self.__automation_lease_kv = None
+        self.__automation_owner_missing_since = None
+
         self.__state_kv = None
         self.__run_kv = None
         self.__reasons_kv = None
 
         self.__run_record = None
         self.__event_uuid = None
+        self.__current_phase = self.RUN_STATE_STOPPED
+        self.__lifecycle_stream = None
+        self.__expected_event_streams: dict[str, tuple[uuid.UUID, uuid.UUID]] = {}
+        self.__pending_run_events: list[tuple[RunRecord, RunEvent]] = []
+        self.__pending_run_events_lock = multiprocessing.Lock()
+        self.__last_pending_event_warning = 0.0
 
         self.__settings_type = RunSettings
         self.__settings = self.__settings_type()
@@ -353,7 +524,6 @@ class ExperimentController:
         self.__states = dict()
 
         self.__data_thread_queue = queue.Queue()
-        self.__data_thread_out_queue = queue.Queue()
 
         self.__daemon = daemon.Daemon(exception_handler=self.handle_exception)
         self.__daemon.add(self.__data_thread)
@@ -377,6 +547,7 @@ class ExperimentController:
 
     def __thread(self, stop_flag: daemon.StopFlag):
         while stop_flag.run() and self.__run:
+            self.__retry_pending_run_event()
             if self.__can_start_event_handle is not None and not self.__can_start_event_handle.is_in_progress():
                 self.__on_can_start_returned()
 
@@ -402,9 +573,18 @@ class ExperimentController:
                 self.__on_stop_returned()
 
             if self.__has_timed_out(self.__stop_handle, 30):
+                self.__set_run_phase(
+                    self.RUN_STATE_STOPPED,
+                    outcome="ABORTED",
+                    reason="Stop run request timed out.",
+                )
                 self.__finalize_run("ABORTED", "Stop run request timed out.")
                 self.__run_record = None
                 self.__stop_handle = None
+
+                if self.__stop_request_handle is not None:
+                    self.__stop_request_handle.fail(b"Stop run request timed out.")
+                    self.__stop_request_handle = None
 
             self.__update_state()
 
@@ -416,15 +596,46 @@ class ExperimentController:
                 should_continue, reason = self.__should_continue()
                 if not should_continue:
                     self.__abort_run(reason)
+            self.__check_automation_owner()
             time.sleep(1)
+
+    def __publish_automation_lease(self):
+        if self.__automation_lease_kv is not None:
+            self.__automation_lease_kv.value = self.__automation_lease.encode()
+
+    def __check_automation_owner(self):
+        owner_uuid = self.__automation_lease.owner_uuid
+        if owner_uuid is None or self.__subsystem is None:
+            self.__automation_owner_missing_since = None
+            return
+        alive = any(
+            handle.get_info().get_uuid() == owner_uuid
+            and state.get_status() == subsystem.SubsystemStatus.STATE_ALIVE
+            for handle, state in self.__subsystem.get_all()
+        )
+        if alive:
+            self.__automation_owner_missing_since = None
+            return
+        if self.__automation_owner_missing_since is None:
+            self.__automation_owner_missing_since = time.monotonic()
+            return
+        if self.__current_run is None and time.monotonic() - self.__automation_owner_missing_since >= 10.0:
+            self.__log(
+                f"Releasing automation lease for disconnected owner {owner_uuid}.",
+                level="WARN",
+                event="automation_lease_release",
+            )
+            self.__automation_lease.clear()
+            self.__automation_owner_missing_since = None
+            self.__publish_automation_lease()
 
     def __status_str_get_for_event(self, event_handle: client._InProgressEvent._Handle):
         states = []
 
-        for uuid, state in event_handle.get_states().items():
+        for subsystem_uuid, state in event_handle.get_states().items():
             code, reason = state
 
-            s_name = self.__require_subsystems.get(uuid, str(uuid))
+            s_name = self.__require_subsystems.get(subsystem_uuid, str(subsystem_uuid))
             status_code = "Ongoing" if code == EVENT_IN_PROGRESS else "Done"
 
             if reason == magics.E_DOES_NOT_HANDLE_EVENT:
@@ -441,20 +652,18 @@ class ExperimentController:
         statestr = []
         
         if self.__current_run is not None:
-            if self.__preinit_handle is not None:
-                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_PREINIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
-                statestr = self.__status_str_get_for_event(self.__preinit_handle)
-            elif self.__init_handle is not None:
-                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_INIT.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
-                statestr = self.__status_str_get_for_event(self.__init_handle)
-            elif self.__stop_handle is not None:
-                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
-                statestr = self.__status_str_get_for_event(self.__stop_handle)
-            elif self.__can_start_event_handle is not None and self.__can_start_event_handle.is_in_progress():
-                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_CAN_START.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
-                statestr = self.__status_str_get_for_event(self.__can_start_event_handle)
-            else:
-                self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_RUNNING.to_bytes(1, "big"), self.__current_run.encode().encode("utf-8")])
+            self.__state_kv.value = segment_bytes.encode([
+                self.__current_phase.to_bytes(1, "big"),
+                self.__current_run.encode().encode("utf-8"),
+            ])
+            event_handle = {
+                self.RUN_STATE_CAN_START: self.__can_start_event_handle,
+                self.RUN_STATE_PREINIT: self.__preinit_handle,
+                self.RUN_STATE_INIT: self.__init_handle,
+                self.RUN_STATE_STOPPING: self.__stop_handle,
+            }.get(self.__current_phase)
+            if event_handle is not None:
+                statestr = self.__status_str_get_for_event(event_handle)
         else:
             self.__state_kv.value = segment_bytes.encode([self.RUN_STATE_STOPPED.to_bytes(1, "big"), bytes()])
 
@@ -526,28 +735,171 @@ class ExperimentController:
 
     def __data_thread(self, stop_flag: daemon.StopFlag):
         self.__library = Library(self.data_path)
-    
-        while stop_flag.run() and self.__run:
-            try:
-                fn, pargs, kwargs = self.__data_thread_queue.get(timeout=1)
-            except queue.Empty:
-                time.sleep(0.01)
-                continue
-
-            r = fn(*pargs, **kwargs)
-            self.__data_thread_out_queue.put(r)
+        try:
+            while stop_flag.run() and self.__run:
+                try:
+                    fn, pargs, kwargs, result_queue = self.__data_thread_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                try:
+                    result_queue.put(("ok", fn(*pargs, **kwargs)))
+                except Exception as exc:
+                    result_queue.put(("err", exc))
+        finally:
+            self.__library.close()
 
     def __data_thread_enqueue(self, fn, *pargs, **kwargs):
-        self.__data_thread_queue.put((fn, pargs, kwargs))
+        result_queue = queue.Queue(maxsize=1)
+        self.__data_thread_queue.put((fn, pargs, kwargs, result_queue))
+        status, result = result_queue.get()
+        if status == "err":
+            raise result
+        return result
 
-        return self.__data_thread_out_queue.get()
+    def __persist_run_event(self, record: RunRecord, event: RunEvent) -> bool:
+        deadline = time.monotonic() + self.RUN_EVENT_RETRY_SECONDS
+        last_error = None
+        while True:
+            try:
+                return bool(self.__data_thread_enqueue(record.append_event, event))
+            except Exception as exc:
+                last_error = exc
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(self.RUN_EVENT_RETRY_INTERVAL_SECONDS)
+        with self.__pending_run_events_lock:
+            if not any(pending.event_id == event.event_id for _record, pending in self.__pending_run_events):
+                self.__pending_run_events.append((record, event))
+        self.__log(
+            f"Run event {event.event_id} could not be persisted immediately and remains queued: "
+            f"{type(last_error).__name__}: {last_error}",
+            level="ERROR",
+            event="run_event_persistence_deferred",
+            run_id=str(event.run_id),
+            event_id=str(event.event_id),
+        )
+        return False
 
-    def __create_run(self):
+    def __retry_pending_run_event(self) -> None:
+        with self.__pending_run_events_lock:
+            pending = self.__pending_run_events[0] if self.__pending_run_events else None
+        if pending is None:
+            return
+        record, event = pending
+        try:
+            self.__data_thread_enqueue(record.append_event, event)
+        except Exception as exc:
+            now = time.monotonic()
+            if now - self.__last_pending_event_warning >= 5.0:
+                self.__last_pending_event_warning = now
+                self.__log(
+                    f"Run event {event.event_id} is still awaiting persistence: {type(exc).__name__}: {exc}",
+                    level="ERROR",
+                    event="run_event_persistence_pending",
+                    run_id=str(event.run_id),
+                    event_id=str(event.event_id),
+                )
+            return
+        with self.__pending_run_events_lock:
+            self.__pending_run_events = [
+                item for item in self.__pending_run_events if item[1].event_id != event.event_id
+            ]
+
+    def __start_lifecycle_stream(self) -> None:
+        if self.__current_run is None or self.__run_record is None:
+            raise RuntimeError("Cannot start a lifecycle event stream without an active run record.")
+        run_id = self.__current_run.get_uuid()
+        self.__lifecycle_stream = RunEventStream(
+            run_id,
+            run_event_stream_id(run_id, self.uuid, "controller.lifecycle"),
+            "controller.lifecycle",
+            self.uuid,
+        )
+        timestamp_ns = time.time_ns()
+        event = self.__lifecycle_stream.event(
+            STREAM_START_KIND,
+            {"controller": self.name, "experiment_type": self.exp_type},
+            producer_unix_ns=timestamp_ns,
+            producer_monotonic_ns=time.monotonic_ns(),
+            ingest_unix_ns=timestamp_ns,
+        )
+        self.__persist_run_event(self.__run_record, event)
+
+    def __declare_expected_event_streams(self) -> None:
+        if self.__lifecycle_stream is None or self.__run_record is None or self.__current_run is None:
+            return
+        run_id = self.__current_run.get_uuid()
+        for stream_name, (submitter_id, producer_id) in self.__expected_event_streams.items():
+            timestamp_ns = time.time_ns()
+            event = self.__lifecycle_stream.event(
+                STREAM_EXPECTED_KIND,
+                {
+                    "stream_id": str(run_event_stream_id(run_id, submitter_id, stream_name)),
+                    "stream_name": stream_name,
+                    "submitter_id": str(submitter_id),
+                    "producer_id": str(producer_id),
+                },
+                producer_unix_ns=timestamp_ns,
+                producer_monotonic_ns=time.monotonic_ns(),
+                ingest_unix_ns=timestamp_ns,
+            )
+            self.__persist_run_event(self.__run_record, event)
+
+    def __set_run_phase(self, phase: int, *, outcome: str | None = None, reason: str | None = None) -> None:
+        if phase not in self.RUN_STATE_NAMES:
+            raise ValueError(f"Unknown run phase {phase}.")
+        if self.__current_run is None:
+            self.__current_phase = self.RUN_STATE_STOPPED
+            return
+        if self.__current_phase == phase and phase != self.RUN_STATE_STOPPED:
+            return
+        self.__current_phase = phase
+        if self.__lifecycle_stream is None or self.__run_record is None:
+            return
+        timestamp_ns = time.time_ns()
+        payload = {"phase": self.RUN_STATE_NAMES[phase], "phase_code": phase}
+        if outcome is not None:
+            payload["outcome"] = outcome
+        if reason is not None:
+            payload["reason"] = reason
+        event = self.__lifecycle_stream.event(
+            "lifecycle.phase",
+            payload,
+            producer_unix_ns=timestamp_ns,
+            producer_monotonic_ns=time.monotonic_ns(),
+            ingest_unix_ns=timestamp_ns,
+        )
+        self.__persist_run_event(self.__run_record, event)
+        if phase == self.RUN_STATE_STOPPED:
+            end_event = self.__lifecycle_stream.event(
+                STREAM_END_KIND,
+                {"outcome": outcome, "reason": reason},
+                producer_unix_ns=timestamp_ns,
+                producer_monotonic_ns=time.monotonic_ns(),
+                ingest_unix_ns=timestamp_ns,
+            )
+            self.__persist_run_event(self.__run_record, end_event)
+            self.__lifecycle_stream = None
+
+    def __create_run(self, run_tags: dict[str, str | int | float] | None = None):
         self.__current_run = RunState(self.exp_type, self.__settings, s_uuid=self.__next_run_uuid)
-        self.__run_record = self.__data_thread_enqueue(RunRecord.create, self.__logger, self.__library, self.__current_run, self.__settings, self)
+        print("Creating run with state:", self.__current_run.get_dict())
+        self.__run_record = self.__data_thread_enqueue(
+            RunRecord.create,
+            self.__logger,
+            self.__library,
+            self.__current_run,
+            self.__settings,
+            self,
+            run_tags,
+        )
+        self.__start_lifecycle_stream()
+        self.__set_run_phase(self.RUN_STATE_CAN_START)
+        print(f"Created run record with UUID {str(self.__current_run.get_uuid())} and entry UUID {str(self.__run_record.get_record().get_uuid())}")
 
     def __abort_run(self, reason: str):
         print("Aborting run:", reason)
+        print(f"Run record: {self.__run_record}")
         if self.__start_run_handle is not None:
             self.__start_run_handle.fail(reason.encode("utf-8"))
             self.__start_run_handle = None
@@ -570,6 +922,7 @@ class ExperimentController:
             self.__init_handle = None
 
         if self.__current_run is not None:
+            self.__set_run_phase(self.RUN_STATE_STOPPED, outcome="ABORTED", reason=reason)
             self.__stop_provider.call(segment_bytes.encode([self.RUN_ABORT.to_bytes(1, "big"), self.__current_run.get_uuid().bytes, reason.encode("utf-8")]), target=[])
         else:
             self.__stop_provider.call(segment_bytes.encode([self.RUN_ABORT.to_bytes(1, "big"), bytes(), reason.encode("utf-8")]), target=[])
@@ -580,11 +933,62 @@ class ExperimentController:
 
     def __on_start_run_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
         print("Start run event called by:", s_uuid, param)
+        allowed, reason = self.__automation_lease.can_start(s_uuid)
+        if not allowed:
+            handle.fail(reason.encode("utf-8"))
+            return
+        if param:
+            handle.fail(b"Legacy prepare event does not accept run tags; use the tagged prepare event.")
+            return
+        self.__begin_start_run(handle, {})
+
+    def __on_start_tagged_run_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
+        print("Tagged start run event called by:", s_uuid, param)
+        allowed, reason = self.__automation_lease.can_start(s_uuid)
+        if not allowed:
+            handle.fail(reason.encode("utf-8"))
+            return
+        try:
+            run_tags = decode_prepare_run_tags(param, self.__settings.get_keys())
+        except ValueError as exc:
+            handle.fail(f"Invalid prepare-run tags: {exc}".encode("utf-8"))
+            return
+
+        self.__begin_start_run(handle, run_tags)
+
+    def __on_acquire_automation_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
+        try:
+            owner_name = param.decode("utf-8")
+        except UnicodeDecodeError:
+            handle.fail(b"Automation owner name must be UTF-8.")
+            return
+        ok, message = self.__automation_lease.acquire(s_uuid, owner_name, time.time())
+        if not ok:
+            handle.fail(message.encode("utf-8"))
+            return
+        self.__automation_owner_missing_since = None
+        self.__publish_automation_lease()
+        handle.ret((magics.OP_OK + b": " + message.encode("utf-8")))
+
+    def __on_release_automation_event(self, s_uuid, _param, handle: client._EventHandler._IncomingEventHandle):
+        if self.__current_run is not None and self.__automation_lease.owner_uuid == s_uuid:
+            handle.fail(b"Cannot release the automation lease while an exposure is active.")
+            return
+        ok, message = self.__automation_lease.release(s_uuid)
+        if not ok:
+            handle.fail(message.encode("utf-8"))
+            return
+        self.__automation_owner_missing_since = None
+        self.__publish_automation_lease()
+        handle.ret((magics.OP_OK + b": " + message.encode("utf-8")))
+
+    def __begin_start_run(self, handle: client._EventHandler._IncomingEventHandle, run_tags):
         self.__start_run_handle = handle
-        s, r = self.__try_start_run()
+        s, r = self.__try_start_run(run_tags)
         if s:
             handle.feedback(r)
         else:
+            self.__start_run_handle = None
             handle.fail(r)
 
     def __on_stop_run_event(self, s_uuid, param, handle: client._EventHandler._IncomingEventHandle):
@@ -596,13 +1000,13 @@ class ExperimentController:
         self.__stop_request_handle = handle
         self.stop_run(param.decode("utf-8"))
 
-    def __try_start_run(self):
+    def __try_start_run(self, run_tags: dict[str, str | int | float] | None = None):
         if self.__preinit_handle is not None or self.__init_handle is not None or self.__stop_handle is not None or self.__current_run is not None:
             self.__logger.log("Cannot start new run while another is in progress!", level="WARN", l_type="EXP", subsystem=self.name)
             return False, b"Cannot start new run while another is in progress!"
         
         self.__next_run_uuid = uuid.uuid4()
-        self.__create_run()
+        self.__create_run(run_tags)
 
         self.__logger.log("Attempting to begin new run: " + str(self.__next_run_uuid) + "...", level="DEBUG", l_type="EXP", subsystem=self.name)
 
@@ -625,28 +1029,48 @@ class ExperimentController:
         
         self.__logger.log(f"Stopping run {str(self.__current_run.get_uuid())[-8:]} : " + reason, level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
 
+        self.__set_run_phase(self.RUN_STATE_STOPPING, reason=reason)
         self.__stop_reason = reason
         self.__stop_handle = self.__stop_provider.call(segment_bytes.encode([self.RUN_OK.to_bytes(1, "big"), self.__current_run.get_uuid().bytes, reason.encode("utf-8")]), target=[])
 
     def __finalize_run(self, code: str, reason: str):
-        self.__data_thread_enqueue(self.__run_record.write_end, self.__current_run, code, reason)
+        record = self.__run_record
+        state = self.__current_run
         self.__run_record = None
 
-        if self.__current_run is None:
-            self.__logger.log(f"Finalizing run with code {code} and reason {reason}, but no current run found!", level="WARN", l_type="EXP", subsystem=self.name)
+        if record is None or state is None:
+            self.__logger.log(
+                f"Skipping duplicate finalization with code {code}: run record or state is unavailable.",
+                level="WARN",
+                l_type="EXP",
+                subsystem=self.name,
+            )
+            if state is not None:
+                try:
+                    self.__stop_kv.value = segment_bytes.encode([state.get_uuid().bytes, code.encode("utf-8"), reason.encode("utf-8")])
+                except Exception as exc:
+                    self.__logger.log(
+                        f"Failed to set terminal stop KV for run {str(state.get_uuid())[-8:]}: {exc}",
+                        level="ERROR",
+                        l_type="EXP",
+                        subsystem=self.name,
+                    )
+            self.__current_run = None
             return
+        self.__data_thread_enqueue(record.write_end, state, code, reason)
 
-        self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=reason, exp_type=self.__current_run.get_type())
+        self.__logger.log(f"Run {str(state.get_uuid())[-8:]} has been finalized with code " + code + ": " + reason, level="DEBUG", l_type="EXP", subsystem=self.name, run=state.get_dict(), reason=reason, exp_type=state.get_type())
         try:
-            print(f"Setting stop KV for run {str(self.__current_run.get_uuid())[-8:]} with code '{code}' and reason '{reason}'")
-            self.__stop_kv.value = segment_bytes.encode([self.__current_run.get_uuid().bytes, code.encode("utf-8"), reason.encode("utf-8")])
+            print(f"Setting stop KV for run {str(state.get_uuid())[-8:]} with code '{code}' and reason '{reason}'")
+            self.__stop_kv.value = segment_bytes.encode([state.get_uuid().bytes, code.encode("utf-8"), reason.encode("utf-8")])
         except Exception as e:
-            self.__logger.log(f"Failed to set stop KV for run {str(self.__current_run.get_uuid())[-8:]}: {e}", level="ERROR", l_type="EXP", subsystem=self.name)
+            self.__logger.log(f"Failed to set stop KV for run {str(state.get_uuid())[-8:]}: {e}", level="ERROR", l_type="EXP", subsystem=self.name)
 
         self.__current_run = None
 
     def __on_stop_returned(self):
         self.__logger.log(f"Run {str(self.__current_run.get_uuid())[-8:]} stopped: " + self.__stop_reason, level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), reason=self.__stop_reason, event="stop_run", exp_type=self.__current_run.get_type())
+        self.__set_run_phase(self.RUN_STATE_STOPPED, outcome="STOPPED", reason=self.__stop_reason)
         self.__finalize_run("STOPPED", self.__stop_reason)
         self.__run_record = None
 
@@ -686,7 +1110,7 @@ class ExperimentController:
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run start rejected by subsystem {s_name} due to {reason.decode("utf-8")}.")
+                self.__abort_run(f"Run start rejected by subsystem {s_name} due to {reason.decode('utf-8')}.")
                 return
             
         for required, required_name in self.__require_subsystems.items():
@@ -704,7 +1128,9 @@ class ExperimentController:
                 return
             
         self.__can_start_event_handle = None
-            
+        self.__set_run_phase(self.RUN_STATE_PREINIT)
+        self.__declare_expected_event_streams()
+
         self.__logger.log("All subsystems OK, starting run preparation.", level="DEBUG", l_type="EXP", subsystem=self.name, responses=log_responses, event="can_begin_run_ok", exp_type=self.exp_type)
         self.__start_run_handle.feedback(b"Preinitiation started.")
         b_s_data = self.__settings.encode().encode("utf-8")
@@ -735,7 +1161,7 @@ class ExperimentController:
                 return
             
             if state != magics.EVENT_OK and reason != magics.E_DOES_NOT_HANDLE_EVENT and reason != magics.E_SUBSYSTEM_DISCONNECTED:
-                self.__abort_run(f"Run preinitialization rejected by subsystem {s_name} due to {reason.decode("utf-8")}.")
+                self.__abort_run(f"Run preinitialization rejected by subsystem {s_name} due to {reason.decode('utf-8')}.")
                 return
         
         for required, required_name in self.__require_subsystems.items():
@@ -755,6 +1181,7 @@ class ExperimentController:
         self.__start_run_handle.feedback(b"Preinit complete, starting init.")
 
         self.__preinit_handle = None
+        self.__set_run_phase(self.RUN_STATE_INIT)
 
         b_s_data = self.__settings.encode().encode("utf-8")
         b_state_data = self.__current_run.encode().encode("utf-8")
@@ -804,6 +1231,7 @@ class ExperimentController:
             
         self.__logger.log("All subsystems init OK, run started.", level="DEBUG", l_type="EXP", subsystem=self.name, exp_type=self.exp_type)
         self.__init_handle = None
+        self.__set_run_phase(self.RUN_STATE_RUNNING)
 
         self.__logger.log(f"Began run {str(self.__current_run.get_uuid())[-8:]}.", level="INFO", l_type="EXP", subsystem=self.name, run=self.__current_run.get_dict(), event="begin_run", responses=log_responses, exp_type=self.exp_type)
 
@@ -811,6 +1239,13 @@ class ExperimentController:
         self.__start_run_handle = None
 
     def __handle_set(self, h, requester, v):
+        allowed, reason = self.__automation_lease.can_update_settings(
+            requester,
+            self.__current_run is not None,
+        )
+        if not allowed:
+            return (magics.TRANSOP_STATE_REJ, reason.encode("utf-8"))
+
         bytes_d = segment_bytes.decode(v)
 
         if len(bytes_d) != 2:
@@ -825,6 +1260,43 @@ class ExperimentController:
         val = self.__settings.encode().encode("utf-8")
         return (magics.TRANSOP_STATE_OK, val)
 
+    def __append_external_run_event(self, event: RunEvent) -> bool:
+        record = RunRecord(self.__logger, self.__library, self, event.run_id)
+        state = record.get_state()
+        if state.get_type() != self.exp_type:
+            raise ValueError("Run event targets another experiment type.")
+        try:
+            version = int(record.get_tags().get("version", 0))
+        except (TypeError, ValueError):
+            version = 0
+        if version < RunRecord.CURRENT_DATA_VERSION:
+            raise ValueError("Historical run records do not accept external run events.")
+        return record.append_event(event)
+
+    def __on_append_run_event(self, sender_uuid, payload, handle) -> None:
+        if not isinstance(payload, bytes) or len(payload) > self.MAX_RUN_EVENT_PAYLOAD_BYTES:
+            handle.fail(b"Run event payload is too large or invalid.")
+            return
+        try:
+            event = RunEvent.decode(payload)
+            expected = self.__expected_event_streams.get(event.stream_name)
+            if expected is None:
+                raise ValueError(f"Run event stream {event.stream_name!r} is not configured.")
+            submitter_id, producer_id = expected
+            if sender_uuid != submitter_id or event.submitter_id != submitter_id:
+                raise ValueError("Run event submitter does not match the configured subsystem.")
+            if event.producer_id != producer_id:
+                raise ValueError("Run event producer does not match the configured source.")
+            expected_stream_id = run_event_stream_id(event.run_id, submitter_id, event.stream_name)
+            if event.stream_id != expected_stream_id:
+                raise ValueError("Run event stream ID is not canonical for this run and submitter.")
+            persisted = replace(event, ingest_unix_ns=time.time_ns())
+            self.__data_thread_enqueue(self.__append_external_run_event, persisted)
+        except Exception as exc:
+            handle.fail(f"Run event was not persisted: {type(exc).__name__}: {exc}".encode("utf-8"))
+            return
+        handle.ret(persisted.event_id.bytes)
+
 
     def __on_got_subsystem(self, handle: client._RegisteredSubsystemHandle):
         self.__subsystem = handle
@@ -837,12 +1309,29 @@ class ExperimentController:
         self.__stop_provider = handle.add_event_provider(b"stopped_" + self.exp_type.encode("utf-8"))
 
         handle.add_event_handler(b"prepare_" + self.exp_type.encode("utf-8")).on_called(self.__on_start_run_event)
+        handle.add_event_handler(
+            b"prepare_" + self.exp_type.encode("utf-8") + b"_with_tags"
+        ).on_called(self.__on_start_tagged_run_event)
+        handle.add_event_handler(b"acquire_" + self.exp_type.encode("utf-8") + b"_automation").on_called(
+            self.__on_acquire_automation_event
+        )
+        handle.add_event_handler(b"release_" + self.exp_type.encode("utf-8") + b"_automation").on_called(
+            self.__on_release_automation_event
+        )
         handle.add_event_handler(b"stop_" + self.exp_type.encode("utf-8")).on_called(self.__on_stop_run_event)
+        handle.add_event_handler(b"append_" + self.exp_type.encode("utf-8") + b"_run_event").on_called(
+            self.__on_append_run_event
+        )
 
         self.__state_kv = self.__subsystem.get_kv_property(b"experiment_state", False, True, True)
         self.__reasons_kv = self.__subsystem.get_kv_property(b"experiment_reasons", False, True, True)
 
         self.__stop_kv = self.__subsystem.get_kv_property(b"run_finalized", False, True, True)
+
+        self.__automation_lease_kv = self.__subsystem.get_kv_property(
+            b"automation_lease", False, True, True
+        )
+        self.__publish_automation_lease()
 
         set_kv_h = self.__subsystem.add_kv_handler(b"settings")
         set_kv_h.on_set(self.__handle_set)
@@ -874,6 +1363,22 @@ class ExperimentController:
     def add_required_subsystem(self, s_uuid: uuid.UUID, name: str):
         self.__require_subsystems[s_uuid] = name
 
+    def add_expected_run_event_stream(
+        self,
+        submitter_uuid: uuid.UUID,
+        stream_name: str,
+        *,
+        producer_uuid: uuid.UUID | None = None,
+    ) -> None:
+        if not isinstance(submitter_uuid, uuid.UUID):
+            raise ValueError("Expected run event submitter must be a UUID.")
+        if not isinstance(stream_name, str) or not stream_name.strip() or stream_name != stream_name.strip():
+            raise ValueError("Expected run event stream name must be non-empty trimmed text.")
+        producer = submitter_uuid if producer_uuid is None else producer_uuid
+        if not isinstance(producer, uuid.UUID):
+            raise ValueError("Expected run event producer must be a UUID.")
+        self.__expected_event_streams[stream_name] = (submitter_uuid, producer)
+
     def ok(self):
         return self.__run and self.__client.ok()
     
@@ -898,9 +1403,18 @@ class ExperimentController:
         self.__settings = self.__settings_type()
 
 class ExperimentReader:
-    def __init__(self, data_path: str, exp_name: str):
-        self.__library = Library(data_path)
+    def __init__(self, data_path: str, exp_name: str, *, read_only: bool = False):
+        self.__library = Library(data_path, read_only=read_only)
         self.__exp_name = exp_name
+
+    def __build_query(self, query: dict | None = None, tags: dict | None = None) -> dict:
+        query_args = {} if query is None else dict(query)
+        query_tags = dict(query_args.get("tags", {}))
+        if tags is not None:
+            query_tags.update(tags)
+        query_tags["experiment"] = self.__exp_name
+        query_args["tags"] = query_tags
+        return query_args
 
     def locate_runs_by_name(self, name: str) -> list[RunRecord]:
         q_tags = {
@@ -945,21 +1459,27 @@ class ExperimentReader:
         
         return runs
     
-    def query(self, query: dict) -> list[RunRecord]:
-        q_tags = {
-            "experiment": self.__exp_name,
-        }
-        q_args = {
-            "tags": q_tags,
-        }
-        q_args.update(query)
-
-        entries = self.__library.query(q_args, limit=None)
+    def query(
+        self,
+        query: dict,
+        limit: int = None,
+        *,
+        offset: int = 0,
+        cursor=None,
+    ) -> list[RunRecord]:
+        q_args = self.__build_query(query)
+        entries = self.__library.query(q_args, limit=limit, offset=offset, cursor=cursor)
         runs = []
 
         for entry in entries:
             try:
-                data_manager = RunRecord(None, self.__library, None, uuid.UUID(entry.get_tags().get("run")))
+                data_manager = RunRecord(
+                    None,
+                    self.__library,
+                    None,
+                    uuid.UUID(entry.get_tags().get("run")),
+                    entry=entry,
+                )
                 runs.append(data_manager)
             except Exception as e:
                 print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
@@ -988,7 +1508,15 @@ class ExperimentReader:
             print(f"Error loading run record for entry {entry.get_uuid()}: {e}")
             return None
 
-    def list_runs(self, q_tags: dict = None, q_args: dict = None, limit: int = None) -> list[RunRecord]:
+    def list_runs(
+        self,
+        q_tags: dict = None,
+        q_args: dict = None,
+        limit: int = None,
+        *,
+        offset: int = 0,
+        cursor=None,
+    ) -> list[RunRecord]:
         """
         Query function for runs.
         
@@ -1004,14 +1532,10 @@ class ExperimentReader:
         limit: optional int, maximum number of results, ordered by creation date (most recent first)
         """
 
-        q_tags = {} if q_tags is None else q_tags
-        q_tags["experiment"] = self.__exp_name
-
-        q_args = {} if q_args is None else q_args
-        q_args["tags"] = q_tags
+        q_args = self.__build_query(q_args, q_tags)
         
         print("Querying runs with args:", q_args, "and limit:", limit)
-        entries = self.__library.query(q_args, limit=limit)
+        entries = self.__library.query(q_args, limit=limit, offset=offset, cursor=cursor)
         print(f"Found {len(entries)} entries matching query.")
         runs = []
 
@@ -1033,6 +1557,12 @@ class ExperimentReader:
         
         print("Done loading runs, total loaded:", len(runs), "failed to load:", failed)
         return runs
+
+    def count(self, query: dict | None = None) -> int:
+        return self.__library.count(self.__build_query(query))
+
+    def close(self) -> None:
+        self.__library.close()
     
     def get_run(self, r_uuid: uuid.UUID) -> RunRecord:
         return RunRecord(None, self.__library, None, r_uuid)
