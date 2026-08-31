@@ -1,5 +1,4 @@
 import socket
-import threading
 import time
 import queue
 import select
@@ -244,7 +243,7 @@ class TCPSocket:
                     break
 
                 try:
-                    self._socket.send(data) # TODO changed from sendall for debug
+                    self._socket.sendall(data)
                 except OSError:
                     self._closed()
                     break
