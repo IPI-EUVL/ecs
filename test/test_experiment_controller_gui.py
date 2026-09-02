@@ -7,7 +7,7 @@ import pytest
 
 from ipi_ecs.dds import magics
 from ipi_ecs.gui.experiment_controller_gui import ExperimentControllerGUI, ExperimentInterface
-from ipi_ecs.subsystems.experiment_controller import ExperimentController
+from ipi_ecs.subsystems.experiment_controller import ExperimentController, decode_prepare_run_tags
 
 
 class _Widget:
@@ -81,6 +81,15 @@ class _ControlInterface:
 
     def get_experiment(self):
         return None
+
+
+class _EventSender:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def call(self, payload, targets):
+        self.calls.append((payload, targets))
+        return "handle"
 
 
 def _gui(interface):
@@ -164,3 +173,21 @@ def test_stop_remains_enabled_during_a_settings_update() -> None:
 
     assert gui._ExperimentControllerGUI__start_button.options["state"] == tk.DISABLED
     assert gui._ExperimentControllerGUI__stop_button.options["state"] == tk.NORMAL
+
+
+def test_interface_uses_tagged_prepare_for_scalar_run_tags() -> None:
+    interface = ExperimentInterface.__new__(ExperimentInterface)
+    plain = _EventSender()
+    tagged = _EventSender()
+    interface._ExperimentInterface__start_experiment_event_sender = plain
+    interface._ExperimentInterface__start_tagged_experiment_event_sender = tagged
+    interface._ExperimentInterface__run_tags = {}
+
+    interface.set_run_tags({"source_calibrations": '{"schema_version":1,"bindings":[]}'})
+    result = interface.start_experiment()
+
+    assert result == "handle"
+    assert plain.calls == []
+    assert decode_prepare_run_tags(tagged.calls[0][0]) == {
+        "source_calibrations": '{"schema_version":1,"bindings":[]}'
+    }

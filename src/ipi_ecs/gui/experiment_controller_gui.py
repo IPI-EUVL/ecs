@@ -14,7 +14,12 @@ from ipi_ecs.core import daemon
 from ipi_ecs.core.tcp import TCPClientSocket
 from ipi_ecs.dds import client, subsystem, types, magics
 from ipi_ecs.logging.client import LogClient
-from ipi_ecs.subsystems.experiment_controller import RunState, RunSettings, ExperimentController
+from ipi_ecs.subsystems.experiment_controller import (
+    ExperimentController,
+    RunSettings,
+    RunState,
+    encode_prepare_run_tags,
+)
 
 class ExperimentInterface:
     def __init__(self, exp_type: str, ctl_uuid: uuid.UUID, exp_settings_type = RunSettings):
@@ -39,6 +44,7 @@ class ExperimentInterface:
         self.__current_state = None
         self.__current_reasons = None
         self.__automation_owner_name = None
+        self.__run_tags: dict[str, str | int | float] = {}
         self.__status_lock = threading.Lock()
 
         self.__status_kv = None
@@ -85,6 +91,9 @@ class ExperimentInterface:
             initial_lease.then(self.__on_automation_lease_update).catch(lambda *_args, **_kwargs: None)
 
         self.__start_experiment_event_sender = handle.add_event_provider(f"prepare_{self.exp_type}".encode("utf-8"))
+        self.__start_tagged_experiment_event_sender = handle.add_event_provider(
+            f"prepare_{self.exp_type}_with_tags".encode("utf-8")
+        )
         self.__stop_experiment_event_sender = handle.add_event_provider(f"stop_{self.exp_type}".encode("utf-8"))
 
     def __on_stop_update(self, n_stop: bytes):
@@ -153,12 +162,22 @@ class ExperimentInterface:
         
         return self.__settings_kv.try_set(segment_bytes.encode([b"description", description.encode("utf-8")]), ret_type)
     
+    def set_run_tags(self, tags: dict[str, str | int | float]) -> None:
+        encode_prepare_run_tags(tags)
+        self.__run_tags = dict(tags)
+
     def start_experiment(self):
-        if self.__start_experiment_event_sender is None:
+        sender = (
+            self.__start_tagged_experiment_event_sender
+            if self.__run_tags
+            else self.__start_experiment_event_sender
+        )
+        if sender is None:
             print("Start event sender not available yet.")
             return
-        
-        return self.__start_experiment_event_sender.call(bytes(), [])
+
+        payload = encode_prepare_run_tags(self.__run_tags) if self.__run_tags else bytes()
+        return sender.call(payload, [])
     
     def stop_experiment(self, reason: str = "Stopped by user."):
         if self.__stop_experiment_event_sender is None:
