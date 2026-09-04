@@ -539,7 +539,7 @@ class _DDSServer:
             self.__subsystems[s_info.get_uuid()] = self._SubsystemClient(s_info)
             subsystem = self.__subsystems[s_info.get_uuid()]
 
-            for r_uuid, s_uuid, key in self.__pending_subscribers:
+            for r_uuid, s_uuid, key in tuple(self.__pending_subscribers):
                 if s_uuid == s_info.get_uuid():
                     self.subscribe(r_uuid, s_uuid, key)
                     self.__pending_subscribers.remove((r_uuid, s_uuid, key))
